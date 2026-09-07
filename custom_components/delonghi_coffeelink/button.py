@@ -38,6 +38,27 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], ButtonEntity):
     _attr_has_entity_name = True
 
     @property
+    def available(self) -> bool:
+        """Buttons stay available across a failed poll - on purpose.
+
+        A button has no state of its own to lose: its state is the timestamp of
+        the last press, and `unknown` until one happens. Letting the coordinator
+        take it unavailable therefore buys no information, and costs a real bug.
+        The logbook labels *every* state change of a `button` entity "Pressed"
+        (frontend `src/data/logbook.ts`, STATE_ACTION_MESSAGES), so the trip
+        through `unavailable` and back after any cloud hiccup was rendered as
+        every button on the machine being pressed in the same second, and fired
+        every `state` trigger watching them. Observed on a single Ayla 504.
+
+        Refusing a command to a machine that cannot receive it is the
+        coordinator preflight's job (`_ensure_machine_reachable`), which raises
+        with an error the user actually sees. That check reads the machine's
+        connection status, not our poll health, so nothing is lost by keeping
+        the buttons pressable here.
+        """
+        return True
+
+    @property
     def device_info(self) -> DeviceInfo:
         d = self.coordinator.device
         return DeviceInfo(
