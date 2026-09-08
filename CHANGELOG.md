@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 ## [0.3.22] - 2026-09-09
 
 ### Fixed
+- **A dropped connection no longer reads as every button being pressed.** One
+  Ayla 504 took the whole platform unavailable; 30 s later the next poll
+  succeeded and the buttons returned to `unknown`. The logbook drew that as
+  every button on the machine being pressed in the same second, because it
+  labels *every* state change of a `button` entity "Pressed" - there is no
+  other word for the domain (frontend `src/data/logbook.ts`,
+  `STATE_ACTION_MESSAGES`). Nothing was sent to the machine, but a `state`
+  trigger watching a button did fire, so an automation keyed on one could act
+  on a cloud hiccup.
+
+  Buttons no longer follow the coordinator's availability. A button has no state
+  of its own to lose - its state is the timestamp of the last press - so taking
+  it unavailable bought nothing and cost the false entry. Whether a command can
+  actually reach the machine was never this flag's job: the coordinator
+  preflight still refuses to write to a machine the cloud reports Offline, and
+  raises an error the user sees. Connection health remains on the Connection and
+  Machine Status sensors, which is where it is readable.
+
 - **Every Ayla call is now bounded by a 30 s timeout, and a timeout is now
   retried like any other transient failure.** The session comes from Home
   Assistant, which inherits aiohttp's 300 s default - not unbounded, but far too
