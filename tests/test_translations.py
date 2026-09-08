@@ -114,3 +114,36 @@ def test_service_names_and_descriptions_are_not_in_services_yaml():
 
     assert "name:" not in services_yaml
     assert "description:" not in services_yaml
+
+
+# --- the device page's "Visit" link ------------------------------------------
+#
+# It used to be `http://<machine ip>`, which is a dead end on every machine, not
+# just an unlucky one: the Ayla Wi-Fi module listens on port 80 and answers 404
+# on every path, so "Visit" opened a browser error. There is no device web UI to
+# point at, so it points at the project instead.
+
+def test_the_visit_link_is_the_project_not_the_machine():
+    source = (COMPONENT_DIR / "const.py").read_text(encoding="utf-8")
+    assert 'PROJECT_URL = "https://github.com/actabi/delonghi_coffeelink"' in source
+
+
+def test_the_visit_link_matches_the_manifest_documentation():
+    """One project, one URL. A rename must not leave the device card behind."""
+    manifest = json.loads((COMPONENT_DIR / "manifest.json").read_text(encoding="utf-8"))
+    assert const.PROJECT_URL == manifest["documentation"]
+    assert manifest["issue_tracker"].startswith(const.PROJECT_URL)
+
+
+def test_no_platform_points_the_visit_link_at_the_machine():
+    """All three platforms build their own DeviceInfo, so all three can drift.
+
+    The machine's IP is still worth having - `lan_ip` feeds the diagnostics - but
+    never as a link a user is invited to click.
+    """
+    for filename in ("sensor.py", "binary_sensor.py", "button.py"):
+        source = (COMPONENT_DIR / filename).read_text(encoding="utf-8")
+        assert "configuration_url=PROJECT_URL," in source, filename
+        assert "lan_ip" not in source, (
+            f"{filename} points the device link back at the machine"
+        )

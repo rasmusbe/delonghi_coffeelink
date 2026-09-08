@@ -30,6 +30,7 @@ from .const import (
     INFO_SENSORS,
     INTEGRATION_CLOUD_APP_ID,
     MANUFACTURER,
+    PROJECT_URL,
     MACHINE_STATUS_OPTIONS,
     MEASUREMENT_WATER_LITERS,
     normalize_connection_status,
@@ -135,7 +136,7 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], SensorEntity):
             manufacturer=MANUFACTURER,
             model=d.oem_model or d.model,
             sw_version=d.sw_version,
-            configuration_url=f"http://{d.lan_ip}" if d.lan_ip else None,
+            configuration_url=PROJECT_URL,
         )
 
 

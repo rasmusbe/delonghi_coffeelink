@@ -4,6 +4,17 @@ from __future__ import annotations
 DOMAIN = "delonghi_coffeelink"
 MANUFACTURER = "De'Longhi"
 
+# Where the device page's "Visit" link goes.
+#
+# NOT the machine's own IP, which is what this used to be. The Ayla Wi-Fi module
+# listens on port 80 but serves nothing: every path answers 404, so "Visit" was a
+# dead end on every machine, not just an unlucky one. There is no device web UI
+# to point at, so the link goes where it can actually help - the project, which
+# is also the only place to report what the machine did.
+#
+# Kept in step with `documentation` in manifest.json by a test.
+PROJECT_URL = "https://github.com/actabi/delonghi_coffeelink"
+
 # Extracted from Coffee Link APK v4.9.6
 APP_ID = "DLonghiCoffeeIdKit-sQ-id"
 APP_SECRET = "DLonghiCoffeeIdKit-HT6b0VNd4y6CSha9ivM5k8navLw"

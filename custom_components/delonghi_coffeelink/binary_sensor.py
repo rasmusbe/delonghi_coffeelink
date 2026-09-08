@@ -22,7 +22,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANUFACTURER, PROJECT_URL
 from .coordinator import DelonghiCoordinator
 
 _DECALC_PERCENT_PROPERTY = "d512_percentage_to_deca"
@@ -85,7 +85,7 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], BinarySensorEntity):
             manufacturer=MANUFACTURER,
             model=d.oem_model or d.model,
             sw_version=d.sw_version,
-            configuration_url=f"http://{d.lan_ip}" if d.lan_ip else None,
+            configuration_url=PROJECT_URL,
         )
 
     def _monitor(self) -> dict[str, Any]:

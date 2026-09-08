@@ -11,7 +11,14 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ACTION_START, ACTION_STOP, BEVERAGES, DOMAIN, MANUFACTURER
+from .const import (
+    ACTION_START,
+    ACTION_STOP,
+    BEVERAGES,
+    DOMAIN,
+    MANUFACTURER,
+    PROJECT_URL,
+)
 from .coordinator import DelonghiCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,7 +74,7 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], ButtonEntity):
             manufacturer=MANUFACTURER,
             model=d.oem_model or d.model,
             sw_version=d.sw_version,
-            configuration_url=f"http://{d.lan_ip}" if d.lan_ip else None,
+            configuration_url=PROJECT_URL,
         )
 
 

@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.25] - 2026-09-09
+
+### Fixed
+- **The device page's "Visit" link went to a 404.** It pointed at the machine's
+  own IP. The Ayla Wi-Fi module does listen on port 80 - so the link looked
+  plausible, and DNS and ping both agree - but it serves nothing: every path
+  answers `404 Not Found`, verified on the reference machine. There is no device
+  web UI behind that address on any model.
+
+  The link goes to the project instead, which is where a user clicking it from a
+  machine that is misbehaving actually needs to end up. `lan_ip` is still
+  collected and still reported; it is simply no longer offered as somewhere to
+  click. A test keeps the three platforms - which each build their own
+  `DeviceInfo` - from drifting apart or pointing it back at the machine.
+
 ## [0.3.24] - 2026-09-09
 
 ### Fixed
