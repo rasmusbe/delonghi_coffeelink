@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.22] - 2026-09-09
+## [Unreleased]
 
 ### Fixed
+
 - **A dropped connection no longer reads as every button being pressed.** One
   Ayla 504 took the whole platform unavailable; 30 s later the next poll
   succeeded and the buttons returned to `unknown`. The logbook drew that as
@@ -23,6 +24,70 @@ All notable changes to this project will be documented in this file.
   raises an error the user sees. Connection health remains on the Connection and
   Machine Status sensors, which is where it is readable.
 
+- **One Ayla `504` no longer marks every entity unavailable - and no longer
+  invents a full sweep of beverage presses.** `async_get_properties` and
+  `async_get_devices` did a bare `session.get()` + `await resp.json()` with no
+  status check, so a gateway error carrying a `text/plain` body surfaced as an
+  unretryable `aiohttp.ContentTypeError`. The retry helper already existed and
+  already handled `{429, 502, 503, 504}` correctly - reading the body as text
+  *before* parsing - but its docstring said "Eletta session paths only" and the
+  two hot polling paths bypassed it. They now go through it.
+
+  This matters far more than a single failed poll suggests.
+  `CoordinatorEntity.available` is just `coordinator.last_update_success`, so
+  one `UpdateFailed` takes **every** entity of the device to `unavailable` and
+  the next poll writes them all back. Home Assistant's logbook renders **both**
+  edges of a `button` as "Pressed", because a button's state *is* its last-press
+  timestamp - so a single hiccup fabricates a complete list of beverages
+  "brewed", on a machine whose lifetime counters never moved. The numeric
+  counters flap too, but the logbook drops sensors carrying a unit, which is
+  exactly why the artifact looks button-specific and therefore believable.
+
+  Observed on an ECAM610.55: ten such blips in seven days, every one lasting
+  exactly one poll interval.
+
+### Added
+- `TRANSIENT_FAILURE_TOLERANCE` (3): behind the HTTP retry, the coordinator now
+  keeps serving the last good snapshot for up to three consecutive failed polls
+  before letting entities go unavailable. Never silent - each tolerated poll
+  logs a warning, so a genuine outage is visible from the first failure rather
+  than only after two minutes. The first refresh is never tolerated: with no
+  previous data there is nothing to serve, and setup must still fail with
+  `ConfigEntryNotReady`.
+
+  `async_set_property_value` is **deliberately left un-retried**. It is the
+  command channel; a blind POST retry there could brew two coffees. It already
+  checks `resp.status` before parsing, so it raises a clean `CloudError`.
+
+- **Machine Status no longer reports a value the machine stopped publishing.**
+  Polling proves the *integration* is alive, never that the *data* is. Because
+  the machine only publishes its monitor blob when prompted (#14), a machine
+  whose cloud link has wedged keeps `connection_status: Online`, keeps every
+  entity available, keeps every poll succeeding - and keeps Machine Status
+  reporting whatever it last said, for days.
+
+  Observed on the reference PrimaDonna Soul: the module answered ICMP, the
+  router saw it on the network, Ayla reported it connected - and of its **311
+  datapoints the only two written in 44 hours were the two the integration
+  writes itself**. Machine Status read a confident `standby` throughout. The
+  automations keyed on it never fired, and nothing anywhere said why.
+
+  Ayla timestamps every datapoint with `data_updated_at`. The integration
+  received it on every poll and discarded it. It is now kept, and past
+  `MONITOR_MAX_AGE` (6 polling intervals) Machine Status reports `unknown`
+  instead of asserting a fossil. Staleness **fails open**: with no timestamp
+  from the cloud there is no evidence of silence, and inventing it would be its
+  own kind of lie.
+
+### Added
+- **`Status Last Published`** (diagnostic, timestamp): when the machine last
+  published its status, as opposed to when the integration last read it. This is
+  the one value that separates "the machine is resting" from "the machine has
+  gone quiet" - Machine Status looks identical either way. Worth an alert.
+
+## [0.3.22] - 2026-09-09
+
+### Fixed
 - **Every Ayla call is now bounded by a 30 s timeout, and a timeout is now
   retried like any other transient failure.** The session comes from Home
   Assistant, which inherits aiohttp's 300 s default - not unbounded, but far too

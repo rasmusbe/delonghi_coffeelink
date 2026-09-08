@@ -70,6 +70,7 @@
           "unknown": "Neznámý stav"
         }
       },
+      "monitor_published": { "name": "Stav naposledy odeslán" },
       "machine_status": {
         "name": "Stav kávovaru",
         "state": {

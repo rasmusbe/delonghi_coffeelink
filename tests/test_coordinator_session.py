@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import importlib.util
 import json as jsonlib
 import logging
@@ -1539,3 +1540,82 @@ def test_a_gateway_error_with_a_text_body_is_retried_not_raised():
 
     assert [d.dsn for d in devices] == ["AC000W019023280"]
     assert len(session.calls) == 2, "the 504 must have been retried, not surfaced"
+
+
+# --- monitor staleness ------------------------------------------------------
+#
+# The failure this catches, observed on the reference PrimaDonna Soul: the
+# machine's cloud link wedged, and for 44 hours Home Assistant reported a
+# confident `standby`. Everything looked healthy - `connection_status: Online`,
+# every entity available, every poll succeeding - because polling proves the
+# INTEGRATION is alive, never that the DATA is. Of 311 datapoints the only two
+# written in that window were the two the integration writes itself. The
+# automations keyed on Machine Status simply never fired, and nothing said why.
+#
+# Ayla timestamps every datapoint; the integration received `data_updated_at` on
+# every poll and discarded it.
+
+def _aged_monitor_props(age_seconds: float | None, blob: str = SOUL_MONITOR_BLOB):
+    props = _monitor_props(d302_monitor=blob)
+    if age_seconds is not None:
+        published = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=age_seconds)
+        props["d302_monitor"]["data_updated_at"] = (
+            published.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+    return props
+
+
+def _polled(props):
+    client = _PollingClient(props=props)
+    coord = _coord("DL-millcore", client=client)
+    asyncio.run(coord._async_update_data())
+    return coord
+
+
+def test_the_publish_time_of_the_monitor_datapoint_is_captured():
+    coord = _polled(_aged_monitor_props(5))
+    assert coord.monitor_updated_at is not None
+    assert coord.monitor_age < 60
+
+
+def test_a_freshly_published_monitor_is_not_stale():
+    coord = _polled(_aged_monitor_props(5))
+    assert coord.monitor_is_stale is False
+
+
+def test_a_monitor_older_than_the_limit_is_stale():
+    coord = _polled(_aged_monitor_props(const.MONITOR_MAX_AGE + 60))
+    assert coord.monitor_is_stale is True
+
+
+def test_a_44_hour_old_monitor_is_stale():
+    """The real observed case, not a synthetic edge."""
+    coord = _polled(_aged_monitor_props(44 * 3600))
+    assert coord.monitor_is_stale is True
+    assert coord.monitor_age > 44 * 3600 - 60
+
+
+def test_staleness_fails_open_when_the_cloud_sends_no_timestamp():
+    """No evidence of silence is not evidence of silence."""
+    coord = _polled(_aged_monitor_props(None))
+    assert coord.monitor_updated_at is None
+    assert coord.monitor_age is None
+    assert coord.monitor_is_stale is False
+
+
+def test_an_unparseable_timestamp_is_not_treated_as_stale():
+    props = _monitor_props(d302_monitor=SOUL_MONITOR_BLOB)
+    props["d302_monitor"]["data_updated_at"] = "not a date"
+    coord = _polled(props)
+    assert coord.monitor_is_stale is False
+
+
+def test_a_stale_datapoint_still_decodes_and_does_not_fail_the_poll():
+    """Staleness is a judgement about age, not a parse failure.
+
+    The blob is still good - the machine simply stopped sending new ones - so the
+    decode must succeed and the poll must not raise. Only the reporting changes.
+    """
+    coord = _polled(_aged_monitor_props(44 * 3600))
+    assert coord.monitor.get("status_name") == "standby"
+    assert coord.monitor_is_stale is True
