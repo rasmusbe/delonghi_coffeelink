@@ -60,6 +60,8 @@ class _StubCoordinator:
         self.name = name
         self.update_interval = update_interval
         self.data: dict | None = None
+        # What CoordinatorEntity.available reads; a failed poll clears it.
+        self.last_update_success = True
 
     def __class_getitem__(cls, item):  # DataUpdateCoordinator[dict[str, Any]]
         return cls
@@ -82,6 +84,31 @@ class _StubHomeAssistantError(Exception):
         self.translation_placeholders = translation_placeholders
 
 
+class _StubCoordinatorEntity:
+    """helpers.update_coordinator.CoordinatorEntity.
+
+    Only the part under test is reproduced: HA's own class ties `available` to
+    the coordinator's last poll, which is exactly what button.py overrides.
+    """
+
+    def __init__(self, coordinator, context=None) -> None:
+        self.coordinator = coordinator
+
+    def __class_getitem__(cls, item):  # CoordinatorEntity[DelonghiCoordinator]
+        return cls
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success
+
+
+class _StubButtonEntity:
+    """components.button.ButtonEntity - a bare base; the _attr_* are plain."""
+
+    _attr_has_entity_name = False
+    name = None  # Entity.name, read by the press-time log line
+
+
 def _install_stubs() -> None:
     core = types.ModuleType("homeassistant.core")
     core.HomeAssistant = object
@@ -91,12 +118,30 @@ def _install_stubs() -> None:
     storage.Store = _StubStore
     upd = types.ModuleType("homeassistant.helpers.update_coordinator")
     upd.DataUpdateCoordinator = _StubCoordinator
+    upd.CoordinatorEntity = _StubCoordinatorEntity
     upd.UpdateFailed = type("UpdateFailed", (Exception,), {})
+    # The entity platforms: button.py is loaded here too, so its imports resolve.
+    button_mod = types.ModuleType("homeassistant.components.button")
+    button_mod.ButtonEntity = _StubButtonEntity
+    config_entries = types.ModuleType("homeassistant.config_entries")
+    config_entries.ConfigEntry = object
+    ha_const = types.ModuleType("homeassistant.const")
+    ha_const.EntityCategory = types.SimpleNamespace(DIAGNOSTIC="diagnostic")
+    device_registry = types.ModuleType("homeassistant.helpers.device_registry")
+    device_registry.DeviceInfo = dict
+    entity_platform = types.ModuleType("homeassistant.helpers.entity_platform")
+    entity_platform.AddEntitiesCallback = object
     for name, mod in (
         ("homeassistant", types.ModuleType("homeassistant")),
+        ("homeassistant.components", types.ModuleType("homeassistant.components")),
+        ("homeassistant.components.button", button_mod),
+        ("homeassistant.config_entries", config_entries),
+        ("homeassistant.const", ha_const),
         ("homeassistant.core", core),
         ("homeassistant.exceptions", exceptions),
         ("homeassistant.helpers", types.ModuleType("homeassistant.helpers")),
+        ("homeassistant.helpers.device_registry", device_registry),
+        ("homeassistant.helpers.entity_platform", entity_platform),
         ("homeassistant.helpers.storage", storage),
         ("homeassistant.helpers.update_coordinator", upd),
     ):
@@ -125,6 +170,7 @@ const = _load("const", "const.py")
 cb = _load("command_builder", "command_builder.py")
 ac = _load("ayla_client", "ayla_client.py")
 coordinator = _load("coordinator", "coordinator.py")
+button = _load("button", "button.py")
 
 COFFEE_FRAME = "DQ+D8AIDAQBuAgMnAQa/qWp4qtoAxYYh"
 COFFEE_SIGNATURE = bytes.fromhex("00c58621")
@@ -1290,3 +1336,66 @@ def test_no_call_site_is_left_without_a_timeout():
     assert len(calls) == 8, f"expected 8 call sites, found {len(calls)}"
     for args in calls:
         assert "timeout=_TIMEOUT" in args, f"unbounded Ayla call: {args[:80]}"
+
+
+# --- buttons: availability (logbook "Pressed" storm) ------------------------
+
+def _buttons(coord):
+    """One instance of every button class the platform registers."""
+    bev_id, key, friendly, icon = const.BEVERAGES[0]
+    return [
+        button.DelonghiStartBeverageButton(coord, bev_id, key, friendly, icon),
+        button.DelonghiWakeButton(coord),
+        button.DelonghiStandbyButton(coord),
+        button.DelonghiStopButton(coord),
+        button.DelonghiDumpRecipesButton(coord),
+    ]
+
+
+def test_the_stub_still_ties_availability_to_the_poll():
+    """Control group: without the override, a failed poll takes an entity out.
+
+    Everything below asserts that buttons do NOT follow the coordinator, which
+    would pass just as well against a stub that never made anything unavailable.
+    """
+
+    class _Plain(_StubCoordinatorEntity):
+        pass
+
+    coord = _coord("DL-millcore")
+    entity = _Plain(coord)
+    assert entity.available is True
+    coord.last_update_success = False
+    assert entity.available is False
+
+
+def test_buttons_stay_available_across_a_failed_poll():
+    """The logbook renders every button state change as "Pressed".
+
+    A single Ayla 504 took the whole platform unavailable, and the return trip
+    to `unknown` 30 s later was drawn as every button being pressed in the same
+    second - and fires any `state` trigger watching them. Nothing was sent to
+    the machine; the logbook simply has no other word for a button. Keeping the
+    entities available removes the state change that is being mislabelled.
+    """
+    coord = _coord("DL-millcore")
+    coord.last_update_success = False
+    for entity in _buttons(coord):
+        assert entity.available is True, f"{type(entity).__name__} went unavailable"
+
+
+def test_an_available_button_still_refuses_an_offline_machine():
+    """Availability is not the guard - the coordinator preflight is.
+
+    This is what makes the constant `available` safe: pressability says nothing
+    about whether the command will be sent, and an Offline machine still gets
+    the refusal (with a user-visible error) rather than a write Ayla accepts and
+    never delivers.
+    """
+    coord = _coord("DL-millcore", connection_status="Offline", client=_RecordingClient())
+    coord.last_update_success = False
+    entity = _buttons(coord)[0]
+    assert entity.available is True
+    with pytest.raises(_StubHomeAssistantError):
+        asyncio.run(entity.async_press())
+    assert coord.client.writes == []
