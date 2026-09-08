@@ -253,6 +253,11 @@
         "name": "Exporter les datapoints recettes"
       }
     },
+    "select": {
+      "user_profile": {
+        "name": "Profil"
+      }
+    },
     "binary_sensor": {
       "water_tank_empty": {
         "name": "Réservoir d'eau vide"
@@ -330,6 +335,9 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} est hors ligne sur le cloud De'Longhi et ne peut pas recevoir de commandes. Vérifiez que la machine est alimentée au secteur et connectée au Wi-Fi (application Coffee Link), puis réessayez."
+    },
+    "unknown_profile": {
+      "message": "{name} n'a pas de profil utilisateur {profile}. Profils exposés par cette machine : {known}."
     }
   }
 }

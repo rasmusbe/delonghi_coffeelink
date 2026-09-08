@@ -253,6 +253,11 @@
         "name": "Rezept-Datenpunkte protokollieren"
       }
     },
+    "select": {
+      "user_profile": {
+        "name": "Profil"
+      }
+    },
     "binary_sensor": {
       "water_tank_empty": {
         "name": "Wassertank leer"
@@ -330,6 +335,9 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} ist in der De'Longhi-Cloud offline und kann keine Befehle empfangen. Prüfen Sie, ob die Maschine mit dem Stromnetz und dem WLAN verbunden ist (Coffee Link App), und versuchen Sie es erneut."
+    },
+    "unknown_profile": {
+      "message": "{name} hat kein Benutzerprofil {profile}. Profile, die diese Maschine bereitstellt: {known}."
     }
   }
 }

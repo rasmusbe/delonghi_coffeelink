@@ -132,6 +132,35 @@ POWER_STANDBY_PARAMS = bytes([0x01, 0x01])
 # Session refresh / deep-standby nudge (DlghIoT refresh(), params 03 02, CRC 5640).
 POWER_SESSION_REFRESH_PARAMS = bytes([0x03, 0x02])
 
+# User-profile select family (0xa9 0xf0). The app switches the machine's active
+# profile (1..5) with a 7-byte frame plus timestamp on the command property:
+#     0d 06 a9 f0 <profile> <crc16 2B> <unix ts 4B BE>
+# and the machine answers on the response property with
+#     d0 07 a9 f0 <profile> <status> <crc16 2B> <unix ts 4B BE>
+# Proof in the repo: tests/fixtures/soul_properties.json carries the pair
+# data_request  = 0d 06 a9 f0 01 d7 c0 69 e8 c5 ee   (crc16 over the first 5 bytes)
+# data_response = d0 07 a9 f0 01 00 3b 3c 69 e8 c5 f0 (two seconds later).
+# status 0x00 is "accepted"; a sibling BLE project saw 0x01 for a guest profile.
+# This family is the "response channel" deliberately kept out of
+# DUMPABLE_BLOB_FAMILIES above - it is a live channel, not a recipe.
+CMD_FAMILY_PROFILE = bytes([0xa9, 0xf0])
+PROFILE_RESPONSE_OK = 0x00
+# The reply's timestamp comes from the machine's clock, our request's from the
+# host's. A reply is treated as predating our request only when it is older by
+# more than this many seconds; without the margin a machine clock a few seconds
+# behind would have its genuine acknowledgement ignored for good, leaving the
+# optimistic value unconfirmed and the switch marked pending forever.
+PROFILE_REPLY_CLOCK_SKEW = 60
+# How long an optimistic profile switch may wait for the machine's reply before
+# it is rolled back. A machine that never answers (an Eletta dropping the frame,
+# a machine in deep standby) would otherwise leave the select showing a profile
+# nobody confirmed, marked pending, until the end of time.
+PROFILE_REPLY_TIMEOUT = 120
+# The only property known to carry the active profile as a plain integer, seen
+# on Eletta-family dumps. It does not exist on the Soul, whose active profile is
+# read from the a9 f0 reply instead.
+ACTIVE_PROFILE_PROPERTY = "d286_mach_sett_profile"
+
 # Machine monitor - operational state published by the machine. Status codes
 # from the DlghIoT client (framagit.org/mattgk/dlghiot), contributed via PR #5.
 #
@@ -294,8 +323,6 @@ COUNTER_MEASUREMENTS: dict[str, str] = {
 INFO_SENSORS = [
     (["software_version"], "software_version", "Software Version", "mdi:chip"),
 ]
-
-PLATFORMS = ["sensor", "binary_sensor", "button"]
 
 # Service names
 SERVICE_SEND_RAW_COMMAND = "send_raw_command"

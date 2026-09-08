@@ -253,6 +253,11 @@
         "name": "Logga receptdatapunkter"
       }
     },
+    "select": {
+      "user_profile": {
+        "name": "Profil"
+      }
+    },
     "binary_sensor": {
       "water_tank_empty": {
         "name": "Vattentanken tom"
@@ -330,6 +335,9 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} är offline i De'Longhis moln och kan inte ta emot kommandon. Kontrollera att maskinen har ström och är ansluten till Wi-Fi (Coffee Link-appen) och försök igen."
+    },
+    "unknown_profile": {
+      "message": "{name} har ingen användarprofil {profile}. Profiler maskinen exponerar: {known}."
     }
   }
 }

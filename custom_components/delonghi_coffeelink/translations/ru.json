@@ -253,6 +253,11 @@
         "name": "Выгрузить datapoints рецептов"
       }
     },
+    "select": {
+      "user_profile": {
+        "name": "Профиль"
+      }
+    },
     "binary_sensor": {
       "water_tank_empty": {
         "name": "Бак для воды пуст"
@@ -330,6 +335,9 @@
   "exceptions": {
     "machine_offline": {
       "message": "Машина {name} не в сети облака De'Longhi и не может получать команды. Убедитесь, что кофемашина подключена к электросети и Wi-Fi (приложение Coffee Link), и повторите попытку."
+    },
+    "unknown_profile": {
+      "message": "У {name} нет профиля пользователя {profile}. Профили, доступные на этой кофемашине: {known}."
     }
   }
 }
