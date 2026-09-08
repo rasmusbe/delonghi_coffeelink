@@ -1622,6 +1622,27 @@ def test_a_switch_nobody_acknowledges_is_rolled_back_after_the_timeout():
     assert coord.profile_change_pending is False
 
 
+def test_a_switch_the_stale_channel_never_answers_still_expires():
+    """The live failure of 2026-09-08: the app set the profile over Bluetooth,
+    our cloud write drew no reply, and the machine's earlier reply - older than
+    our request - sat on the channel. Every poll took the stale-reply branch,
+    so before the fix the switch showed `pending` for good. The timeout must
+    fire whatever is on the channel."""
+    client = _RecordingClient()
+    coord = _soul_with_catalog(client)
+    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
+    asyncio.run(coord.async_send_profile(2))
+    assert coord.active_user_profile == 2
+    coord._profile_request_ts -= const.PROFILE_REPLY_TIMEOUT + 1
+
+    # The pre-switch reply (profile 1, older than the request) is still all the
+    # machine has published - the exact case the stale guard would skip.
+    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
+
+    assert coord.active_user_profile == 1
+    assert coord.profile_change_pending is False
+
+
 def test_a_second_switch_keeps_the_original_fallback():
     """Select 3, then 4, before any reply: a refusal of 4 must fall back to the
     profile the machine actually had, never to the unconfirmed 3."""

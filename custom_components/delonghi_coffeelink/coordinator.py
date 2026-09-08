@@ -460,6 +460,15 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._clear_pending_profile()
 
     def _read_active_profile(self, props: dict[str, Any]) -> None:
+        # A switch we sent expires on its own after the timeout, whatever sits
+        # on the channel now. This must run before the stale-reply guard below:
+        # when the machine never answers our request, its previous reply stays
+        # on the channel - older than our request, so every poll takes the
+        # stale branch and returns. Expiring here, not inside a branch, is what
+        # keeps an unanswered switch from showing pending for good (observed on
+        # 2026-09-08: the app was setting the profile over Bluetooth and our
+        # cloud write drew no reply, so the pre-switch reply sat there).
+        self._expire_pending_profile()
         offered = sorted(self.user_profile_labels())
         if self.response_property is None:
             prop = props.get(ACTIVE_PROFILE_PROPERTY)
@@ -480,9 +489,8 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         value = prop.get("value") if isinstance(prop, dict) else None
         parsed = parse_profile_response(value)
         if parsed is None:
-            # Another family on the shared channel: no evidence either way, so
-            # keep the last known value - but a switch may have timed out.
-            self._expire_pending_profile()
+            # Another family on the shared channel (a brew ack, say): no
+            # evidence either way, so keep the last known value.
             return
         profile, status, reply_ts = parsed["profile"], parsed["status"], parsed["timestamp"]
         pending_ts = self._profile_request_ts
@@ -521,7 +529,6 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 profile,
                 offered,
             )
-            self._expire_pending_profile()
             return
         if profile != self.active_user_profile:
             _LOGGER.info(

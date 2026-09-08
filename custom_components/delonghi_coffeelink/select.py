@@ -76,9 +76,10 @@ class DelonghiUserProfileSelect(_Base):
     name cell when the name blob was read, every declared slot as ``Profile N``
     otherwise (see ``catalog_profile_labels`` for why the two differ). Selecting
     one sends the same ``a9 f0`` frame the official app writes; the state
-    follows the reply the machine leaves on its response channel, so a switch
-    made in the app is picked up too. A change made on the machine's own panel
-    produces no cloud traffic and is not seen until the next reply.
+    follows the reply the machine leaves on its response channel. A switch made
+    over the cloud (including the app when it uses the cloud) is picked up; one
+    made on the panel or by the app over Bluetooth is not, until the machine
+    next reports over the cloud.
     """
 
     _attr_entity_category = EntityCategory.CONFIG

@@ -48,9 +48,12 @@ All notable changes to this project will be documented in this file.
   truncated reference dump.
 
   The current option is the profile the machine last acknowledged **over the
-  cloud**; a profile changed on the machine's own panel produces no cloud
-  traffic, so it is not visible until the next reply the machine sends for any
-  reason.
+  cloud**. A switch made any other way is invisible until the machine next
+  reports over the cloud: the panel produces no cloud traffic, and the app
+  talks to the machine over Bluetooth when the phone is in range, which never
+  reaches the Ayla cloud this integration reads. A switch we send that the
+  machine never acknowledges (the app was holding the machine, say) rolls back
+  after 120 s rather than showing `pending` for good.
 
   On the Eletta Explore the frame is synthesized with the same 4-byte session
   tail standby carries, but profile switching is **untested** on
