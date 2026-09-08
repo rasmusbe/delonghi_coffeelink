@@ -843,7 +843,7 @@ def test_every_machine_is_attempted_before_the_error_surfaces():
 
     with pytest.raises(ac.CloudError):
         asyncio.run(
-            coordinator.async_send_to_all(
+            coordinator.async_send_to_each(
                 [boom, ok_a, ok_b], lambda coord: coord.async_send_wake()
             )
         )
@@ -858,7 +858,7 @@ def test_a_cloud_error_is_not_swallowed():
 
     with pytest.raises(ac.AuthError):
         asyncio.run(
-            coordinator.async_send_to_all([boom], lambda coord: coord.async_send_wake())
+            coordinator.async_send_to_each([boom], lambda coord: coord.async_send_wake())
         )
 
 
@@ -868,7 +868,7 @@ def test_the_offline_refusal_still_surfaces_through_the_fan_out():
 
     with pytest.raises(_StubHomeAssistantError) as err:
         asyncio.run(
-            coordinator.async_send_to_all(
+            coordinator.async_send_to_each(
                 [offline, online], lambda coord: coord.async_send_wake()
             )
         )
@@ -882,7 +882,7 @@ def test_nothing_is_raised_when_every_machine_takes_it():
     coords = [_coord("DL-millcore", client=_RecordingClient()) for _ in range(3)]
 
     asyncio.run(
-        coordinator.async_send_to_all(coords, lambda coord: coord.async_send_wake())
+        coordinator.async_send_to_each(coords, lambda coord: coord.async_send_wake())
     )
 
     assert [len(coord.client.writes) for coord in coords] == [1, 1, 1]

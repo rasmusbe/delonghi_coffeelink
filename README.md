@@ -119,21 +119,43 @@ Or manually :
 
 ## Services
 
+All three services take a **target**. With a single machine set up you can leave
+it out and the machine is used. With several, the target is required: a call
+without one is refused with an error naming your machines, rather than sent to
+all of them.
+
 ```yaml
 # Start a beverage
-service: delonghi_coffeelink.start_beverage
+action: delonghi_coffeelink.start_beverage
+target:
+  device_id: 1a2b3c...        # or entity_id / area_id
 data:
-  beverage: hot_water  # espresso, cappuccino, latte_macchiato, etc.
+  beverage: hot_water          # espresso, cappuccino, latte_macchiato, etc.
 
 # Stop a beverage
-service: delonghi_coffeelink.stop_beverage
+action: delonghi_coffeelink.stop_beverage
+target:
+  device_id: 1a2b3c...
 data:
   beverage: hot_water
 
 # Send a raw binary command (advanced)
-service: delonghi_coffeelink.send_raw_command
+action: delonghi_coffeelink.send_raw_command
+target:
+  device_id: 1a2b3c...
 data:
   value_base64: DQ2D8BABDwD6GwEGgSRp6Myg
+```
+
+Naming several devices in one call is still allowed, and sends to each of them -
+the difference is that it now has to be asked for.
+
+```yaml
+action: delonghi_coffeelink.start_beverage
+target:
+  device_id: [1a2b3c..., 4d5e6f...]
+data:
+  beverage: espresso
 ```
 
 ## Technical details

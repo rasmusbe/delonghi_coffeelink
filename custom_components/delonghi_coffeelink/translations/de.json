@@ -333,6 +333,21 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} ist in der De'Longhi-Cloud offline und kann keine Befehle empfangen. Prüfen Sie, ob die Maschine mit dem Stromnetz und dem WLAN verbunden ist (Coffee Link App), und versuchen Sie es erneut."
+    },
+    "no_machine_configured": {
+      "message": "Es ist keine De'Longhi-Maschine eingerichtet, an die dieser Befehl gehen könnte."
+    },
+    "target_required": {
+      "message": "Zu diesem Konto gehören mehrere Maschinen ({machines}); der Befehl muss angeben, welche gemeint ist. Wählen Sie ein Gerät als Ziel der Aktion - sonst ginge er an alle."
+    },
+    "target_not_a_machine": {
+      "message": "{device} ist keine von dieser Integration verwaltete De'Longhi-Kaffeemaschine. Verfügbare Maschinen: {machines}."
+    },
+    "machine_unavailable": {
+      "message": "{device} ist zwar eine De'Longhi-Maschine, aber ihr Konto ist derzeit nicht geladen, daher kann der Befehl nicht gesendet werden. Verfügbare Maschinen: {machines}."
+    },
+    "target_matched_no_machine": {
+      "message": "Das Ziel dieser Aktion enthält keine De'Longhi-Kaffeemaschine. Verfügbare Maschinen: {machines}."
     }
   }
 }

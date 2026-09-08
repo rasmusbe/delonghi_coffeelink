@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.24] - 2026-09-09
+
+### Fixed
+- **A service call no longer goes to every machine on the account (#16).** Asking
+  for one espresso on a two-machine account brewed one on *each* machine, and the
+  code carried the admission as a comment rather than a fix. Two defects behind
+  it: the three service handlers fanned every call out over the whole list, and
+  they closed over a single config entry's coordinators while registering under
+  global names - so with two entries the second registration replaced the first,
+  and the first entry's machines could not be commanded at all.
+
+  The three services now take a device target, resolved at call time across every
+  config entry. The target is **optional on purpose**: with one machine set up it
+  is used, so no existing automation breaks. With several and no target given, the
+  call is refused with an error naming the machines, rather than sent to all of
+  them - the one outcome that cannot be undone once the cups are full. Explicit
+  fan-out is still available by naming several devices in one call.
+
+  `send_raw_command` is targeted the same way and stays reachable; it remains the
+  field-instrumentation escape hatch the reachability preflight never refuses.
+
+  Areas and entities work as targets too, not only devices. Declaring `target:`
+  in `services.yaml` makes Home Assistant offer all of them in the picker and
+  pass the whole target block into the call data - so accepting only `device_id`
+  would have rejected `area_id` with a raw `extra keys not allowed` before any
+  handler ran, on a target the integration's own UI had just offered.
+
+  **Breaking, and only for accounts with more than one machine:** an automation
+  calling one of these services with no target now raises instead of brewing.
+  That was the bug - it used to brew everywhere - but it is a behaviour change,
+  and the fix is to add a target to those automations. Single-machine setups,
+  which is nearly all of them, are untouched.
+
+### Changed
+- **`async_send_to_all` is now `async_send_to_each`.** It is handed the machines
+  a call resolved to, not every machine there is; the old name described the
+  behaviour that was just removed, and a reader skimming the handlers would have
+  concluded the fan-out was still there.
+- **The services are removed when the last account is deleted, not when the last
+  entry unloads.** A reload unloads too, and the entry is still listed at that
+  moment, so unload cannot tell a reload from a deletion. Removing there meant a
+  reload whose setup then failed - `ConfigEntryNotReady` on a cloud 5xx or an
+  auth flap, both routine here - left the services missing for the whole retry
+  backoff, with automations failing on "Service not found".
+
 ## [0.3.23] - 2026-09-09
 
 ### Fixed

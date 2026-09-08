@@ -1325,16 +1325,21 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._with_cloud_session(_do)
 
 
-async def async_send_to_all(
+async def async_send_to_each(
     coordinators: list[DelonghiCoordinator],
     send: Callable[[DelonghiCoordinator], Awaitable[None]],
 ) -> None:
-    """Run one command on every machine, then report the first failure.
+    """Run one command on each machine given, then report the first failure.
 
-    A service call addresses every machine of the config entry, so one machine
-    failing - unreachable, a cloud 5xx, an expired token - must not swallow the
-    others: every coordinator is attempted, and the first exception is re-raised
-    afterwards so the caller still learns something did not go through.
+    "each", not "all": the caller passes the machines a service call actually
+    resolved to. It was named `to_all` when a call went to every machine on the
+    account, which was the bug - a reader skimming the handlers would reasonably
+    have concluded the fan-out was still there.
+
+    One machine failing - unreachable, a cloud 5xx, an expired token - must not
+    swallow the others: every coordinator is attempted, and the first exception
+    is re-raised afterwards so the caller still learns something did not go
+    through.
     """
     errors: list[Exception] = []
     for coord in coordinators:
