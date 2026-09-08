@@ -4,6 +4,65 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **A Profile select switches the machine's active user profile** - the same
+  switch the official Coffee Link app offers, as a `select` entity per machine
+  (`select.<machine>_profile`, config category). The options are the machine's
+  own profile names when the catalogue carries them, otherwise `Profile N`,
+  which is the machine's own default naming; when two slots share a name the
+  label gets the slot appended, so two `Profile 2` never collapse into one
+  option.
+
+  The frame pair, verified byte for byte against a capture of the official app
+  (`tests/fixtures/soul_properties.json`): the request is
+  `0d 06 a9 f0 <profile> <crc16> <unix ts>` on the command property
+  (`data_request` on the Soul), and the machine answers
+  `d0 07 a9 f0 <profile> <status> <crc16> <ts>` on the response property
+  (`data_response`), `status 00` meaning accepted. In the fixture the request
+  reads exactly `0d 06 a9 f0 01 d7 c0 69 e8 c5 ee` and the reply
+  `d0 07 a9 f0 01 00 3b 3c 69 e8 c5 f0`.
+
+  The reply is what the entity believes, not the request. Selecting an option
+  sets it optimistically and sends the frame; the next cloud reply either
+  confirms it or, on a non-zero status, reverts it with a warning; a reply that
+  never comes reverts it after 120 s. A reply stamped more than 60 s before our
+  own request is ignored (the machine stamps its reply with its own clock, so a
+  margin is needed), which keeps a stale acknowledgement of the previous profile
+  from overwriting a change that is still in flight, and a slot the display
+  does not offer is never accepted, so the entity never holds a state its own
+  option list lacks. Requesting such a slot raises `unknown_profile` naming the
+  slots the machine does offer. Attributes:
+  `profile_slot`, `profile_read_at`, `profile_slots`, `pending`.
+
+  The options are the profiles the machine's own display offers. The name
+  blobs (`a4 f0`, and `aa f0` for custom slots) turn out to be 21-byte cells
+  per slot - 20 bytes of NUL-padded UTF-16BE text plus one metadata byte, an
+  icon id on profiles - read off an untruncated reference Soul on 2026-09-08;
+  the old parser stopped at the first NUL and named slot 1 only. The same
+  machine shows three profiles yet publishes recipes and priority lists for
+  five, and its name blob for slots 4-5 is a bare NUL: those slots are firmware
+  capacity. The cell, not the name, is therefore what makes a slot an option:
+  a slot with a cell is offered (under `Profile N` when the cell is blank), a
+  slot without one never is. The `Profile N` fallback for every witnessed slot
+  is for a machine whose name blobs cannot be read at all, such as the
+  truncated reference dump.
+
+  The current option is the profile the machine last acknowledged **over the
+  cloud**; a profile changed on the machine's own panel produces no cloud
+  traffic, so it is not visible until the next reply the machine sends for any
+  reason.
+
+  On the Eletta Explore the frame is synthesized with the same 4-byte session
+  tail standby carries, but profile switching is **untested** on
+  the Eletta over the cloud. The `a9f0` family stays excluded from the Dump
+  Recipe Datapoints diagnostic.
+
+### Changed
+- **Removed an unused duplicate `PLATFORMS` list from `const.py`.** Two lists
+  with the same name and no reader for one of them is exactly how a new platform
+  gets added to the wrong one; the select platform is registered in the single
+  list `__init__.py` actually loads.
+
 ### Fixed
 - **Every Ayla call is now bounded by a 30 s timeout, and a timeout is now
   retried like any other transient failure.** The session comes from Home

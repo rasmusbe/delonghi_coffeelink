@@ -119,6 +119,9 @@
       "stop": { "name": "Zastavit přípravu" },
       "dump_recipes": { "name": "Vypsat data receptů" }
     },
+    "select": {
+      "user_profile": { "name": "Profil" }
+    },
     "binary_sensor": {
       "water_tank_empty": { "name": "Prázdná nádržka na vodu" },
       "waste_container_full": { "name": "Plný zásobník sedliny" },
@@ -188,6 +191,9 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} je v cloudu De'Longhi offline a nemůže přijímat příkazy. Zkontrolujte, zda je kávovar připojen k elektrické síti a k Wi-Fi (aplikace Coffee Link), a zkuste to znovu."
+    },
+    "unknown_profile": {
+      "message": "{name} nemá uživatelský profil {profile}. Profily, které tento kávovar nabízí: {known}."
     }
   }
 }
