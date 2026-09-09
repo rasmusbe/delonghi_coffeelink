@@ -43,6 +43,29 @@ ayla = _load("ayla_client")
 
 FAMILIES = {b"\xa4\xf0": "profile names", b"\xaa\xf0": "custom names", b"\xba\xf0": "bean names"}
 EXTRA = ("data_request", "data_response", "d745_profile_set")
+# The monitor blob is the only thing the machine publishes on its own, so it is
+# the only place a change made on the machine's own panel could show up. Three
+# of its contents bytes (10, 11, 12) are decoded by nothing; printing the block
+# with indices is how you check whether one of them tracks the active profile.
+MONITOR = ("d302_monitor", "d302_monitor_machine", "d303_monitor_extended")
+
+
+def print_monitor(name: str, raw: bytes) -> None:
+    """Print a monitor blob's contents with an index over each byte."""
+    length = raw[1] if len(raw) >= 2 else 0
+    data = raw[2 : length - 1] if length >= 4 and len(raw) >= length + 1 else b""
+    contents = data[2:] if len(data) >= 2 else b""
+    print(f"{name} [monitor] raw={raw.hex(' ')}")
+    if not contents:
+        print("    (no contents block)")
+        return
+    print("    idx  " + " ".join(f"{i:02d}" for i in range(len(contents))))
+    print("    val  " + " ".join(f"{b:02x}" for b in contents))
+    named = {0: "accessory", 5: "status", 6: "action", 7: "progress"}
+    print("    known: " + ", ".join(f"{n}={contents[i]}" for i, n in named.items() if i < len(contents)))
+    unread = [i for i in range(10, min(13, len(contents)))]
+    if unread:
+        print("    unread: " + ", ".join(f"[{i}]={contents[i]}" for i in unread))
 
 
 async def main() -> None:
@@ -72,6 +95,13 @@ async def main() -> None:
                 value = props.get(name, {}).get("value")
                 if not isinstance(value, str):
                     print(f"{name} = {value!r}")
+            for name in MONITOR:
+                value = props.get(name, {}).get("value")
+                if isinstance(value, str) and value.strip():
+                    try:
+                        print_monitor(name, base64.b64decode("".join(value.split())))
+                    except Exception as exc:  # noqa: BLE001 - a diagnostic
+                        print(f"{name} undecodable: {exc}")
 
 
 asyncio.run(main())
