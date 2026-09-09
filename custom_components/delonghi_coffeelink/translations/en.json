@@ -251,11 +251,9 @@
       },
       "dump_recipes": {
         "name": "Dump Recipe Datapoints"
-      }
-    },
-    "select": {
-      "user_profile": {
-        "name": "Profile"
+      },
+      "set_profile": {
+        "name": "Profile {profile}"
       }
     },
     "binary_sensor": {

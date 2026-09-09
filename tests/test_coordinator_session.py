@@ -89,7 +89,8 @@ class _StubCoordinatorEntity:
     """helpers.update_coordinator.CoordinatorEntity.
 
     Only the part under test is reproduced: HA's own class ties `available` to
-    the coordinator's last poll, which is exactly what select.py overrides.
+    the coordinator's last poll, which is what a button never has to care about
+    - it claims to know nothing, so it stays pressable.
     """
 
     def __init__(self, coordinator, context=None) -> None:
@@ -103,15 +104,12 @@ class _StubCoordinatorEntity:
         return self.coordinator.last_update_success
 
 
-class _StubSelectEntity:
-    """components.select.SelectEntity - a bare base; options/current_option are the
-    subclass's own properties, and the state write after a selection is a no-op."""
+class _StubButtonEntity:
+    """components.button.ButtonEntity - a bare base; the entity's own attributes
+    and its async_press are all these tests exercise."""
 
     _attr_has_entity_name = False
     name = None
-
-    def async_write_ha_state(self) -> None:
-        return None
 
 
 def _install_stubs() -> None:
@@ -125,9 +123,9 @@ def _install_stubs() -> None:
     upd.DataUpdateCoordinator = _StubCoordinator
     upd.CoordinatorEntity = _StubCoordinatorEntity
     upd.UpdateFailed = type("UpdateFailed", (Exception,), {})
-    # The entity platform: select.py is loaded here too, so its imports resolve.
-    select_mod = types.ModuleType("homeassistant.components.select")
-    select_mod.SelectEntity = _StubSelectEntity
+    # The entity platform: button.py is loaded here too, so its imports resolve.
+    button_mod = types.ModuleType("homeassistant.components.button")
+    button_mod.ButtonEntity = _StubButtonEntity
     config_entries = types.ModuleType("homeassistant.config_entries")
     config_entries.ConfigEntry = object
     ha_const = types.ModuleType("homeassistant.const")
@@ -139,7 +137,7 @@ def _install_stubs() -> None:
     for name, mod in (
         ("homeassistant", types.ModuleType("homeassistant")),
         ("homeassistant.components", types.ModuleType("homeassistant.components")),
-        ("homeassistant.components.select", select_mod),
+        ("homeassistant.components.button", button_mod),
         ("homeassistant.config_entries", config_entries),
         ("homeassistant.const", ha_const),
         ("homeassistant.core", core),
@@ -175,7 +173,7 @@ const = _load("const", "const.py")
 cb = _load("command_builder", "command_builder.py")
 ac = _load("ayla_client", "ayla_client.py")
 coordinator = _load("coordinator", "coordinator.py")
-select = _load("select", "select.py")
+button = _load("button", "button.py")
 
 COFFEE_FRAME = "DQ+D8AIDAQBuAgMnAQa/qWp4qtoAxYYh"
 COFFEE_SIGNATURE = bytes.fromhex("00c58621")
@@ -1344,34 +1342,21 @@ def test_no_call_site_is_left_without_a_timeout():
         assert "timeout=_TIMEOUT" in args, f"unbounded Ayla call: {args[:80]}"
 
 
-# --- user profile: read-back and switch (select "Profile") -------------------
+# --- user profile: sending the switch (one button per profile) ---------------
 #
-# The official app switches the machine's active profile with one a9f0 frame
-# and the machine answers on the response channel, where the reply then stays.
-# fixtures/soul_properties.json caught both halves of one such exchange:
+# The official app switches the machine's active profile with one a9f0 frame;
+# fixtures/soul_properties.json caught one such write:
 #   data_request  = 0d 06 a9 f0 01 d7 c0 69 e8 c5 ee   (app -> machine, slot 1)
-#   data_response = d0 07 a9 f0 01 00 3b 3c 69 e8 c5 f0 (machine -> app, ok, +2 s)
+# What comes back is deliberately not tracked: a profile changed on the
+# machine's own panel produces no cloud traffic at all (proven on the reference
+# PrimaDonna Soul, 2026-09-09), so nothing here may claim to know which profile
+# is active. Hence buttons that only send, and no select.
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "soul_properties.json"
-FIXTURE_REPLY_TS = 0x69E8C5F0
 
 
 def _fixture_props() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
-
-
-def _profile_reply(profile: int, status: int, ts: int | None) -> str:
-    """The machine's answer: d0 07 a9 f0 <p> <status> <crc16> [<ts 4B>]."""
-    head = bytes([const.CMD_RESPONSE_PREFIX, 0x07, *const.CMD_FAMILY_PROFILE, profile, status])
-    raw = head + cb.crc16_aug_ccitt(head).to_bytes(2, "big")
-    if ts is not None:
-        raw += ts.to_bytes(4, "big")
-    return base64.b64encode(raw).decode("ascii")
-
-
-def test_the_reply_builder_reproduces_the_fixture():
-    """Guards every test below: the synthetic replies have the machine's shape."""
-    assert _profile_reply(1, 0, FIXTURE_REPLY_TS) == _fixture_props()["data_response"]["value"]
 
 
 def _soul_with_catalog(client=None, connection_status: str = "Online"):
@@ -1381,8 +1366,12 @@ def _soul_with_catalog(client=None, connection_status: str = "Online"):
     return coord
 
 
-def _profile_writes(client) -> list[str]:
-    return [value for _dsn, prop, value in client.writes if prop == "data_request"]
+def _soul_with_names(client=None):
+    """Three named profiles, five witnessed slots - the reference machine."""
+    coord = _soul_with_catalog(client)
+    coord.catalog["names"]["profiles"] = {1: "Anna", 2: "Bertil", 3: "Guest"}
+    coord.catalog["profile_slots"] = [1, 2, 3]
+    return coord
 
 
 def test_soul_sends_the_app_frame_for_the_chosen_slot():
@@ -1397,8 +1386,6 @@ def test_soul_sends_the_app_frame_for_the_chosen_slot():
     assert (dsn, prop) == (coord.device.dsn, "data_request")
     assert base64.b64decode(value)[:7].hex(" ") == "0d 06 a9 f0 03 f7 82"
     assert value in coord._sent_values  # the echo must not read as app traffic
-    assert coord.active_user_profile == 3  # optimistic, until the machine answers
-    assert coord.profile_change_pending is True
 
 
 @pytest.mark.parametrize("slot", [1, 2, 3, 4, 5])
@@ -1423,13 +1410,11 @@ def test_a_slot_the_machine_never_declared_is_refused_before_any_write():
         "name": "Coffee Maker", "profile": "9", "known": "1, 2, 3, 4, 5",
     }
     assert client.writes == []
-    assert coord.active_user_profile is None
-    assert coord.profile_change_pending is False
 
 
 def test_without_a_catalogue_the_machine_decides():
-    """No slot list means no gate - refusing would make the select unusable on a
-    machine whose recipe blobs were simply unreadable."""
+    """No slot list means no gate - refusing would make the buttons unusable on
+    a machine whose recipe blobs were simply unreadable."""
     client = _RecordingClient()
     coord = _coord("DL-millcore", client=client)
     assert coord.user_profile_slots() == []
@@ -1448,82 +1433,9 @@ def test_a_profile_byte_the_wire_cannot_carry_is_refused_the_same_way():
     assert client.writes == []
 
 
-def test_a_poll_reads_the_active_profile_from_the_reply_left_on_the_channel():
-    """The value present at startup counts: the sniffer skips it, this must not."""
-    client = _PollingClient(props=_fixture_props())
-    coord = _coord("DL-millcore", client=client)
-
-    asyncio.run(coord._async_update_data())
-
-    assert coord.response_property == "data_response"
-    assert coord.user_profile_slots() == [1, 2, 3, 4, 5]
-    assert coord.active_user_profile == 1
-    assert coord.active_user_profile_at == FIXTURE_REPLY_TS
-    assert coord.profile_change_pending is False
-
-
-def test_a_second_identical_poll_changes_nothing():
-    client = _PollingClient(props=_fixture_props())
-    coord = _coord("DL-millcore", client=client)
-    asyncio.run(coord._async_update_data())
-    asyncio.run(coord._async_update_data())
-    assert (coord.active_user_profile, coord.active_user_profile_at) == (1, FIXTURE_REPLY_TS)
-
-
-def _poll_reply(coord, value: str) -> None:
-    """Drive one reply through the profile reader with the fixture's catalogue."""
-    props = _fixture_props()
-    props["data_response"] = {"value": value}
-    coord._update_active_profile(props)
-
-
-def test_a_refusal_we_did_not_ask_for_leaves_the_profile_alone():
-    coord = _soul_with_catalog()
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    _poll_reply(coord, _profile_reply(2, 1, FIXTURE_REPLY_TS + 60))
-    assert coord.active_user_profile == 1
-    assert coord.active_user_profile_at == FIXTURE_REPLY_TS
-
-
-def test_a_reply_for_a_slot_the_machine_does_not_declare_is_not_believed():
-    """Unknown must never read as a confident value."""
-    coord = _soul_with_catalog()
-    _poll_reply(coord, _profile_reply(9, 0, FIXTURE_REPLY_TS))
-    assert coord.active_user_profile is None
-    assert coord.active_user_profile_at is None
-
-
-def test_a_reply_without_a_catalogue_is_the_only_evidence_and_is_taken():
-    """No catalogue means no gate on either side: the machine decides what we
-    send, and its CRC-valid reply is all there is to read back. Refusing it
-    would leave a switch sent through the coordinator pending forever."""
-    coord = _coord("DL-millcore")
-    coord.response_property = "data_response"
-    coord._update_active_profile({"data_response": {"value": _profile_reply(1, 0, None)}})
-    assert coord.active_user_profile == 1
-
-
-def _soul_with_names(client=None):
-    """Three named profiles, five witnessed slots - the reference machine."""
-    coord = _soul_with_catalog(client)
-    coord.catalog["names"]["profiles"] = {1: "Anna", 2: "Bertil", 3: "Guest"}
-    coord.catalog["profile_slots"] = [1, 2, 3]
-    return coord
-
-
-def test_a_reply_for_a_slot_the_display_does_not_offer_is_ignored():
-    """Slot 4 is witnessed (recipes, priority list) but unnamed, so the select
-    does not list it; accepting a reply for it would put the entity in a state
-    its own option list lacks."""
-    coord = _soul_with_names()
-    assert coord.user_profile_slots() == [1, 2, 3, 4, 5]
-    assert sorted(coord.user_profile_labels()) == [1, 2, 3]
-    _poll_reply(coord, _profile_reply(3, 0, FIXTURE_REPLY_TS))
-    _poll_reply(coord, _profile_reply(4, 0, FIXTURE_REPLY_TS + 60))
-    assert coord.active_user_profile == 3
-
-
 def test_a_switch_to_a_slot_the_display_does_not_offer_is_refused():
+    """Slot 4 is witnessed (recipes, priority list) but unnamed, so the machine
+    does not offer it and no button exists for it either."""
     client = _RecordingClient()
     coord = _soul_with_names(client)
     with pytest.raises(_StubHomeAssistantError) as err:
@@ -1532,170 +1444,10 @@ def test_a_switch_to_a_slot_the_display_does_not_offer_is_refused():
     assert client.writes == []
 
 
-def test_a_switch_nobody_acknowledges_is_rolled_back_after_the_timeout():
-    """A machine that never answers must not leave an unconfirmed profile on
-    display, marked pending until the end of time."""
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-    coord._profile_request_ts -= const.PROFILE_REPLY_TIMEOUT + 1
-
-    # The channel still shows the old reply (stale, ignored) - or a brew ack.
-    _poll_reply(coord, "AA==")
-
-    assert coord.active_user_profile == 1
-    assert coord.profile_change_pending is False
-
-
-def test_a_second_switch_keeps_the_original_fallback():
-    """Select 3, then 4, before any reply: a refusal of 4 must fall back to the
-    profile the machine actually had, never to the unconfirmed 3."""
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-    asyncio.run(coord.async_send_profile(4))
-    assert coord.active_user_profile == 4
-
-    _poll_reply(coord, _profile_reply(4, 1, coord._profile_request_ts + 2))
-
-    assert coord.active_user_profile == 1
-    assert coord.profile_change_pending is False
-
-
 def test_the_unknown_profile_error_never_lists_nothing():
     coord = _coord("DL-millcore")
     err = coord.unknown_profile_error(300, [])
     assert err.translation_placeholders["known"] == "none declared"
-
-
-def test_a_stale_reply_does_not_override_an_optimistic_switch():
-    """The old reply is still on the channel for a poll or two after we write."""
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-    assert coord._profile_request_ts > FIXTURE_REPLY_TS
-
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-
-    assert coord.active_user_profile == 3
-    assert coord.profile_change_pending is True
-
-
-def test_a_reply_from_a_slightly_slow_machine_clock_still_confirms():
-    """The machine stamps its reply with its own clock; a few seconds behind the
-    host must not turn a genuine acknowledgement into a "stale" one, or the
-    switch would stay pending until the next unrelated reply."""
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-    slow_clock = coord._profile_request_ts - const.PROFILE_REPLY_CLOCK_SKEW + 5
-
-    _poll_reply(coord, _profile_reply(3, 0, slow_clock))
-
-    assert coord.active_user_profile == 3
-    assert coord.active_user_profile_at == slow_clock
-    assert coord.profile_change_pending is False
-
-
-def test_a_fresh_confirmation_clears_the_pending_switch():
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-    reply_ts = coord._profile_request_ts + 2
-
-    _poll_reply(coord, _profile_reply(3, 0, reply_ts))
-
-    assert coord.active_user_profile == 3
-    assert coord.active_user_profile_at == reply_ts
-    assert coord.profile_change_pending is False
-    assert coord._profile_before_request is None
-
-
-def test_a_fresh_refusal_rolls_the_switch_back(caplog):
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    _poll_reply(coord, _profile_reply(1, 0, FIXTURE_REPLY_TS))
-    asyncio.run(coord.async_send_profile(3))
-
-    with caplog.at_level(logging.WARNING):
-        _poll_reply(coord, _profile_reply(3, 1, coord._profile_request_ts + 2))
-
-    assert coord.active_user_profile == 1
-    assert coord.active_user_profile_at == FIXTURE_REPLY_TS  # untouched by the refusal
-    assert coord.profile_change_pending is False
-    assert any(
-        "refused user profile 3 (status 1)" in rec.getMessage() for rec in caplog.records
-    )
-
-
-def test_a_refusal_of_a_switch_from_nothing_rolls_back_to_nothing():
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    asyncio.run(coord.async_send_profile(2))
-    _poll_reply(coord, _profile_reply(2, 1, coord._profile_request_ts + 1))
-    assert coord.active_user_profile is None
-    assert coord.profile_change_pending is False
-
-
-def test_another_family_on_the_shared_channel_keeps_the_last_profile():
-    """The response channel also carries brew acks; those say nothing about profiles."""
-    coord = _soul_with_catalog()
-    _poll_reply(coord, _profile_reply(2, 0, FIXTURE_REPLY_TS))
-    brew_ack = bytes([const.CMD_RESPONSE_PREFIX, 0x05, 0x83, 0xF0, 0x01])
-    brew_ack += cb.crc16_aug_ccitt(brew_ack).to_bytes(2, "big")
-    _poll_reply(coord, base64.b64encode(brew_ack).decode("ascii"))
-    _poll_reply(coord, "AA==")
-    _poll_reply(coord, "not base64 at all")
-    assert coord.active_user_profile == 2
-    assert coord.active_user_profile_at == FIXTURE_REPLY_TS
-
-
-def test_a_reply_stamped_with_no_timestamp_is_still_accepted():
-    """Only 8 bytes come back on some frames; the stale guard then cannot apply."""
-    coord = _soul_with_catalog()
-    _poll_reply(coord, _profile_reply(4, 0, None))
-    assert coord.active_user_profile == 4
-    assert coord.active_user_profile_at is None
-
-
-def test_a_broken_profile_reader_never_breaks_the_poll(monkeypatch):
-    client = _PollingClient(props=_fixture_props())
-    coord = _coord("DL-millcore", client=client)
-    monkeypatch.setattr(
-        coordinator, "parse_profile_response",
-        lambda value: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    props = asyncio.run(coord._async_update_data())
-    assert props is client.props
-    assert coord.active_user_profile is None
-
-
-def test_the_setting_datapoint_is_only_a_fallback_without_a_response_channel():
-    """d286_mach_sett_profile does not exist on the Soul; where it does, only a
-    plain int in a declared slot is believed - never a string or blob."""
-    coord = _coord("DL-millcore")
-    coord.catalog = catalog.build_catalog(_fixture_props())
-    assert coord.response_property is None
-
-    coord._update_active_profile({"d286_mach_sett_profile": {"value": "2"}})
-    assert coord.active_user_profile is None
-    coord._update_active_profile({"d286_mach_sett_profile": {"value": True}})
-    assert coord.active_user_profile is None
-    coord._update_active_profile({"d286_mach_sett_profile": {"value": 9}})
-    assert coord.active_user_profile is None
-    coord._update_active_profile({"d286_mach_sett_profile": {"value": 2}})
-    assert coord.active_user_profile == 2
-    assert coord.active_user_profile_at is None
-
-    # With a response channel the datapoint is not consulted at all.
-    coord.response_property = "data_response"
-    coord._update_active_profile({"d286_mach_sett_profile": {"value": 4}})
-    assert coord.active_user_profile == 2
 
 
 def test_eletta_profile_frame_carries_the_machine_signature():
@@ -1724,8 +1476,6 @@ def test_eletta_online_switch_goes_through_the_command_channel():
     raw = base64.b64decode(profile_writes[0][2])
     assert raw[:5].hex(" ") == "0d 06 a9 f0 02"
     assert raw[-4:] == COFFEE_SIGNATURE
-    assert coord.active_user_profile == 2
-    assert coord.profile_change_pending is True
 
 
 def test_an_app_profile_frame_is_captured_but_never_learned_as_a_beverage():
@@ -1741,94 +1491,74 @@ def test_an_app_profile_frame_is_captured_but_never_learned_as_a_beverage():
     assert coord.learned_wake_frame is None
 
 
-# --- select entity -----------------------------------------------------------
+# --- profile buttons ---------------------------------------------------------
 
-def test_select_options_are_the_machine_labels():
+def _profile_buttons(coord) -> list:
+    entry = types.SimpleNamespace(entry_id="entry-1")
+    hass = types.SimpleNamespace(data={const.DOMAIN: {entry.entry_id: [coord]}})
+    added: list = []
+    asyncio.run(button.async_setup_entry(hass, entry, added.extend))
+    return [e for e in added if isinstance(e, button.DelonghiSetProfileButton)]
+
+
+def test_setup_adds_one_button_per_offered_profile():
     coord = _soul_with_catalog()
-    entity = select.DelonghiUserProfileSelect(coord)
-    assert entity.options == ["Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5"]
-    assert entity._attr_unique_id == f"{coord.device.dsn}_user_profile"
-    assert entity._attr_translation_key == "user_profile"
-    assert entity._attr_entity_category == "config"
+    buttons = _profile_buttons(coord)
+
+    assert [b._slot for b in buttons] == [1, 2, 3, 4, 5]
+    assert [b._attr_translation_placeholders for b in buttons] == [
+        {"profile": f"Profile {slot}"} for slot in (1, 2, 3, 4, 5)
+    ]
+    assert [b._attr_unique_id for b in buttons] == [
+        f"{coord.device.dsn}_set_profile_{slot}" for slot in (1, 2, 3, 4, 5)
+    ]
+    assert {b._attr_translation_key for b in buttons} == {"set_profile"}
+    assert {b._attr_entity_category for b in buttons} == {"config"}
 
 
-def test_select_state_is_unknown_until_the_machine_has_answered():
-    coord = _soul_with_catalog()
-    entity = select.DelonghiUserProfileSelect(coord)
-    assert entity.current_option is None
-    attrs = entity.extra_state_attributes
-    assert attrs == {
-        "profile_slot": None,
-        "profile_read_at": None,
-        "profile_slots": [1, 2, 3, 4, 5],
-        "pending": False,
-    }
-
-    _poll_reply(coord, _profile_reply(2, 0, FIXTURE_REPLY_TS))
-
-    assert entity.current_option == "Profile 2"
-    assert entity.extra_state_attributes["profile_slot"] == 2
-    assert entity.extra_state_attributes["profile_read_at"] == FIXTURE_REPLY_TS
+def test_only_the_profiles_the_display_offers_get_a_button():
+    """Five slots are witnessed, three are named: the machine offers three."""
+    coord = _soul_with_names()
+    buttons = _profile_buttons(coord)
+    assert [b._slot for b in buttons] == [1, 2, 3]
+    assert [b._attr_translation_placeholders["profile"] for b in buttons] == [
+        "Anna", "Bertil", "Guest",
+    ]
 
 
-def test_select_never_shows_a_slot_the_labels_do_not_know():
-    coord = _soul_with_catalog()
-    entity = select.DelonghiUserProfileSelect(coord)
-    coord.active_user_profile = 9  # cannot happen through the reader; belt and braces
-    assert entity.current_option is None
+def test_a_machine_that_declares_no_profiles_gets_no_profile_buttons():
+    coord = _coord("DL-millcore")
+    assert coord.user_profile_slots() == []
+    assert _profile_buttons(coord) == []
 
 
-def test_selecting_an_option_sends_that_slot():
+def test_pressing_a_profile_button_sends_that_slot():
     client = _RecordingClient()
     coord = _soul_with_catalog(client)
-    entity = select.DelonghiUserProfileSelect(coord)
+    entity = button.DelonghiSetProfileButton(coord, 3, "Profile 3")
 
-    asyncio.run(entity.async_select_option("Profile 3"))
+    asyncio.run(entity.async_press())
 
     assert len(client.writes) == 1
-    assert base64.b64decode(client.writes[0][2])[4] == 3
-    assert entity.current_option == "Profile 3"
-    assert entity.extra_state_attributes["pending"] is True
+    assert base64.b64decode(client.writes[0][2])[:7].hex(" ") == "0d 06 a9 f0 03 f7 82"
 
 
-def test_selecting_an_unknown_option_is_refused_without_a_write():
-    client = _RecordingClient()
-    coord = _soul_with_catalog(client)
-    entity = select.DelonghiUserProfileSelect(coord)
-    with pytest.raises(_StubHomeAssistantError) as err:
-        asyncio.run(entity.async_select_option("Guest"))
-    assert err.value.translation_key == "unknown_profile"
-    assert err.value.translation_placeholders["profile"] == "Guest"
-    assert client.writes == []
-
-
-def test_select_stays_available_across_a_failed_poll():
-    coord = _soul_with_catalog()
+def test_a_profile_button_is_pressable_across_a_failed_poll():
+    """A button claims to know nothing, so a cloud hiccup cannot make it lie -
+    the only refusal is the coordinator's own reachability preflight."""
+    coord = _soul_with_catalog(_RecordingClient())
     coord.last_update_success = False
-    assert select.DelonghiUserProfileSelect(coord).available is True
+    entity = button.DelonghiSetProfileButton(coord, 2, "Profile 2")
+
+    asyncio.run(entity.async_press())
+
+    assert len(coord.client.writes) == 1
 
 
-def test_an_available_select_still_refuses_an_offline_machine():
+def test_pressing_a_profile_button_refuses_an_offline_machine():
     coord = _soul_with_catalog(_RecordingClient(), connection_status="Offline")
-    entity = select.DelonghiUserProfileSelect(coord)
+    entity = button.DelonghiSetProfileButton(coord, 2, "Profile 2")
     with pytest.raises(_StubHomeAssistantError) as err:
-        asyncio.run(entity.async_select_option("Profile 2"))
+        asyncio.run(entity.async_press())
     assert err.value.translation_key == "machine_offline"
     assert coord.client.writes == []
-    assert coord.active_user_profile is None
-
-
-def test_setup_adds_one_select_per_machine_that_declares_profiles():
-    with_catalog = _soul_with_catalog()
-    without_catalog = _coord("DL-millcore")
-    entry = types.SimpleNamespace(entry_id="entry-1")
-    hass = types.SimpleNamespace(
-        data={const.DOMAIN: {entry.entry_id: [with_catalog, without_catalog]}}
-    )
-    added: list = []
-
-    asyncio.run(select.async_setup_entry(hass, entry, added.extend))
-
-    assert len(added) == 1
-    assert isinstance(added[0], select.DelonghiUserProfileSelect)
-    assert added[0].coordinator is with_catalog

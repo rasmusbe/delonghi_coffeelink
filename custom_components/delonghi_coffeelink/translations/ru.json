@@ -251,11 +251,9 @@
       },
       "dump_recipes": {
         "name": "Выгрузить datapoints рецептов"
-      }
-    },
-    "select": {
-      "user_profile": {
-        "name": "Профиль"
+      },
+      "set_profile": {
+        "name": "Профиль {profile}"
       }
     },
     "binary_sensor": {

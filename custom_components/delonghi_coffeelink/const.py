@@ -132,7 +132,7 @@ POWER_STANDBY_PARAMS = bytes([0x01, 0x01])
 # Session refresh / deep-standby nudge (DlghIoT refresh(), params 03 02, CRC 5640).
 POWER_SESSION_REFRESH_PARAMS = bytes([0x03, 0x02])
 
-# User-profile select family (0xa9 0xf0). The app switches the machine's active
+# User-profile switch family (0xa9 0xf0). The app switches the machine's active
 # profile (1..5) with a 7-byte frame plus timestamp on the command property:
 #     0d 06 a9 f0 <profile> <crc16 2B> <unix ts 4B BE>
 # and the machine answers on the response property with
@@ -143,22 +143,16 @@ POWER_SESSION_REFRESH_PARAMS = bytes([0x03, 0x02])
 # status 0x00 is "accepted"; a sibling BLE project saw 0x01 for a guest profile.
 # This family is the "response channel" deliberately kept out of
 # DUMPABLE_BLOB_FAMILIES above - it is a live channel, not a recipe.
+# The reply only ever answers a switch someone SENT: a profile changed on the
+# machine's own panel produces no cloud traffic at all (reference PrimaDonna
+# Soul, 2026-09-09 - while the machine was online and publishing, a panel
+# switch left the monitor bytes and both command channels untouched), which is
+# why the integration only sends this frame and keeps no active-profile state.
 CMD_FAMILY_PROFILE = bytes([0xa9, 0xf0])
 PROFILE_RESPONSE_OK = 0x00
-# The reply's timestamp comes from the machine's clock, our request's from the
-# host's. A reply is treated as predating our request only when it is older by
-# more than this many seconds; without the margin a machine clock a few seconds
-# behind would have its genuine acknowledgement ignored for good, leaving the
-# optimistic value unconfirmed and the switch marked pending forever.
-PROFILE_REPLY_CLOCK_SKEW = 60
-# How long an optimistic profile switch may wait for the machine's reply before
-# it is rolled back. A machine that never answers (an Eletta dropping the frame,
-# a machine in deep standby) would otherwise leave the select showing a profile
-# nobody confirmed, marked pending, until the end of time.
-PROFILE_REPLY_TIMEOUT = 120
 # The only property known to carry the active profile as a plain integer, seen
-# on Eletta-family dumps. It does not exist on the Soul, whose active profile is
-# read from the a9 f0 reply instead.
+# on Eletta-family dumps; it does not exist on the Soul. Named here so the
+# recipe dump does not treat it as a blob (see command_builder.recipe_dump_lines).
 ACTIVE_PROFILE_PROPERTY = "d286_mach_sett_profile"
 
 # Machine monitor - operational state published by the machine. Status codes
