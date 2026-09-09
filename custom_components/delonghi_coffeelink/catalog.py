@@ -592,9 +592,9 @@ def catalog_profile_slots(catalog: dict | None) -> list[int]:
     The union of three independent witnesses - a profile name blob
     (``a4f0``), a per-profile recipe (``a6f0``) and a per-profile priority
     list (``a8f0``) - so a slot counts when any one family names it. Feeds the
-    select entity's option list and the coordinator's "is this slot real"
-    gate before a switch is sent; an empty list means the machine published
-    nothing per profile and no select should be offered at all.
+    coordinator's "is this slot real" gate before a switch is sent; an empty
+    list means the machine published nothing per profile, and no profile
+    button is created at all.
     """
     if not catalog:
         return []
@@ -614,16 +614,16 @@ def catalog_profile_labels(catalog: dict | None) -> dict[int, str]:
     profiles on its display yet publishes recipes and priority lists for five;
     its name blob for slots 4-5 is a bare NUL (2026-09-08 dump,
     ``d0 08 a4 f0 04 05 00 <crc>``). Those two slots are firmware capacity, not
-    choices, and a select that listed them would offer profiles the machine's
-    own screen does not. A blank cell still counts as a slot, labelled with the
+    choices, and a button for them would offer profiles the machine's own
+    screen does not. A blank cell still counts as a slot, labelled with the
     machine's own default ``Profile N``. Only when no name blob could be read
     at all (the truncated reference dump) does every witnessed slot appear
     under that default - honest about what is unknown rather than silently
     empty.
 
-    Select options must be unique, so any label two or more slots share is
-    suffixed with the slot number for each of them (a household with two
-    "Anna"s). The suffix is applied only on collision, so the common case
+    Two buttons must not carry the same name, so any label two or more slots
+    share is suffixed with the slot number for each of them (a household with
+    two "Anna"s). The suffix is applied only on collision, so the common case
     reads as the machine's display does.
     """
     slots = (catalog or {}).get("profile_slots") or catalog_profile_slots(catalog)

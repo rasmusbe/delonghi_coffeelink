@@ -30,7 +30,6 @@ from .command_builder import (
     first_device_signature,
     is_wake_power_frame,
     learnable_beverage_id,
-    parse_profile_response,
     recipe_dump_lines,
     replay_with_timestamp,
     serialize_learned_frames,
@@ -46,7 +45,6 @@ from .catalog import (
     catalog_summary,
 )
 from .const import (
-    ACTIVE_PROFILE_PROPERTY,
     ACTION_STOP,
     APP_ID_PROPERTY,
     COMMAND_PROPERTY_CANDIDATES,
@@ -60,9 +58,6 @@ from .const import (
     INTEGRATION_CLOUD_APP_ID,
     MONITOR_KEEPALIVE_INTERVAL,
     MONITOR_PROPERTY_CANDIDATES,
-    PROFILE_REPLY_CLOCK_SKEW,
-    PROFILE_REPLY_TIMEOUT,
-    PROFILE_RESPONSE_OK,
     REACHABILITY_MAX_AGE,
     RECIPE_STORE_SAVE_DELAY,
     RECIPE_STORE_VERSION,
@@ -161,19 +156,6 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # entities. ``None`` until the first poll produces readable blobs.
         self.catalog: dict[str, Any] | None = None
         self._catalog_fingerprint: tuple | None = None
-        # The machine's active user profile (1-based slot), read from the
-        # ``a9 f0`` reply the machine leaves on the response channel. Named
-        # ``active_user_profile`` because ``self.profile`` is the ModelProfile.
-        # ``None`` until a reply for a slot the catalogue knows has been seen.
-        self.active_user_profile: int | None = None
-        # Unix timestamp carried by that reply frame - the value present at
-        # startup may be days old, and this is how that age is made visible.
-        self.active_user_profile_at: int | None = None
-        # Optimistic switch in flight: the timestamp we stamped on our request
-        # (replies older than it predate the switch) and the value to fall back
-        # to should the machine refuse. Both ``None`` when nothing is pending.
-        self._profile_request_ts: int | None = None
-        self._profile_before_request: int | None = None
         self._store: Store = Store(
             hass, RECIPE_STORE_VERSION, f"{DOMAIN}_recipes_{device.dsn}"
         )
@@ -216,7 +198,6 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # captured on this very poll must be able to see the ids it declares.
             self._update_catalog(props)
             self._sniff_app_traffic(props)
-            self._update_active_profile(props)
             self._update_monitor(props)
             self._update_session_from_props(props)
             # Refresh device connection status
@@ -383,164 +364,11 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """A unique display label per offered slot (see ``catalog_profile_labels``).
 
         Offered, not merely declared: the reference Soul declares five slots and
-        offers three on its display. The select's options, the gate on what a
-        reply may set and the gate on what a switch may request all use this
-        set, so the entity can never show a state it does not list.
+        offers three on its display. One button is created per entry here, and
+        the same set gates what a switch may request, so no button exists for a
+        profile the machine's own display does not list.
         """
         return catalog_profile_labels(self.catalog)
-
-    def user_profile_slot_for_label(self, label: str) -> int | None:
-        """Reverse-map a select option back to its slot, ``None`` if unknown."""
-        for slot, known in self.user_profile_labels().items():
-            if known == label:
-                return slot
-        return None
-
-    @property
-    def profile_change_pending(self) -> bool:
-        """True while a profile switch we sent still awaits the machine's reply."""
-        return self._profile_request_ts is not None
-
-    def _clear_pending_profile(self) -> None:
-        self._profile_request_ts = None
-        self._profile_before_request = None
-
-    def _update_active_profile(self, props: dict[str, Any]) -> None:
-        """Read the machine's active user profile from the response channel.
-
-        The machine answers a profile switch with ``d0 07 a9 f0 <p> <status>``
-        on the response property and leaves it there, so the reply present in
-        every poll is the best evidence of which profile is active - including
-        the value already there at startup, which the sniffer deliberately
-        skips (``_capture_channel`` only fires on a new datapoint marker). That
-        is why this reads ``props[response_property]`` directly each poll.
-
-        Rules, in order:
-
-        - another family on the shared channel (a brew ack, say) is not
-          evidence either way, so the last known profile is kept;
-        - a reply stamped before our own pending request (by more than
-          ``PROFILE_REPLY_CLOCK_SKEW``, the machine's clock being its own)
-          predates the switch and is ignored, otherwise we would "confirm" the
-          old value;
-        - a non-zero status answering our request rolls the optimistic value
-          back to what it replaced; any other refusal is only logged;
-        - a slot the machine does not offer is not accepted, so the entity
-          never holds a state its option list lacks; with no catalogue at all
-          the machine's own CRC-valid reply is the only evidence and is taken;
-        - a switch still unconfirmed after ``PROFILE_REPLY_TIMEOUT`` is rolled
-          back: a machine that never answers must not leave a profile nobody
-          confirmed on display, marked pending until the end of time;
-        - ``d286_mach_sett_profile`` is honoured as a plain ``int`` only on
-          machines without a response channel (it does not exist on the Soul,
-          and a blob there must never be mistaken for a slot number).
-
-        Diagnostic-grade like the monitor and catalogue: it must never be able
-        to break a poll.
-        """
-        try:
-            self._read_active_profile(props)
-        except Exception:  # noqa: BLE001 - diagnostic must never break the poll
-            _LOGGER.debug("Active profile read failed (non-fatal)", exc_info=True)
-
-    def _expire_pending_profile(self) -> None:
-        """Roll back an optimistic switch the machine never acknowledged."""
-        pending_ts = self._profile_request_ts
-        if pending_ts is None or time.time() - pending_ts < PROFILE_REPLY_TIMEOUT:
-            return
-        _LOGGER.warning(
-            "Machine %s never acknowledged user profile %s within %d s; "
-            "showing profile %s again",
-            self.device.name or self.device.dsn,
-            self.active_user_profile,
-            PROFILE_REPLY_TIMEOUT,
-            self._profile_before_request,
-        )
-        self.active_user_profile = self._profile_before_request
-        self._clear_pending_profile()
-
-    def _read_active_profile(self, props: dict[str, Any]) -> None:
-        # A switch we sent expires on its own after the timeout, whatever sits
-        # on the channel now. This must run before the stale-reply guard below:
-        # when the machine never answers our request, its previous reply stays
-        # on the channel - older than our request, so every poll takes the
-        # stale branch and returns. Expiring here, not inside a branch, is what
-        # keeps an unanswered switch from showing pending for good (observed on
-        # 2026-09-08: the app was setting the profile over Bluetooth and our
-        # cloud write drew no reply, so the pre-switch reply sat there).
-        self._expire_pending_profile()
-        offered = sorted(self.user_profile_labels())
-        if self.response_property is None:
-            prop = props.get(ACTIVE_PROFILE_PROPERTY)
-            value = prop.get("value") if isinstance(prop, dict) else None
-            if isinstance(value, int) and not isinstance(value, bool) and value in offered:
-                if value != self.active_user_profile:
-                    _LOGGER.debug(
-                        "Active user profile for dsn=%s is %s (%s)",
-                        self.device.dsn,
-                        value,
-                        ACTIVE_PROFILE_PROPERTY,
-                    )
-                self.active_user_profile = value
-                self.active_user_profile_at = None
-            return
-
-        prop = props.get(self.response_property)
-        value = prop.get("value") if isinstance(prop, dict) else None
-        parsed = parse_profile_response(value)
-        if parsed is None:
-            # Another family on the shared channel (a brew ack, say): no
-            # evidence either way, so keep the last known value.
-            return
-        profile, status, reply_ts = parsed["profile"], parsed["status"], parsed["timestamp"]
-        pending_ts = self._profile_request_ts
-        if (
-            pending_ts is not None
-            and reply_ts is not None
-            and reply_ts < pending_ts - PROFILE_REPLY_CLOCK_SKEW
-        ):
-            _LOGGER.debug(
-                "Ignoring profile reply for slot %s stamped %s: predates our request at %s",
-                profile,
-                reply_ts,
-                pending_ts,
-            )
-            return
-        if status != PROFILE_RESPONSE_OK:
-            if pending_ts is not None and profile == self.active_user_profile:
-                _LOGGER.warning(
-                    "Machine %s refused user profile %s (status %s); keeping profile %s",
-                    self.device.name or self.device.dsn,
-                    profile,
-                    status,
-                    self._profile_before_request,
-                )
-                self.active_user_profile = self._profile_before_request
-                self._clear_pending_profile()
-            else:
-                _LOGGER.debug(
-                    "Profile reply for slot %s carries status %s; ignoring", profile, status
-                )
-            return
-        if offered and profile not in offered:
-            _LOGGER.debug(
-                "Profile reply names slot %s which the machine does not offer "
-                "(offered: %s); ignoring",
-                profile,
-                offered,
-            )
-            return
-        if profile != self.active_user_profile:
-            _LOGGER.info(
-                "Active user profile for dsn=%s is %s (reply stamped %s)",
-                self.device.dsn,
-                profile,
-                reply_ts,
-            )
-        self.active_user_profile = profile
-        self.active_user_profile_at = reply_ts
-        if pending_ts is not None:
-            self._clear_pending_profile()
 
     def _update_monitor(self, props: dict[str, Any]) -> None:
         """Decode the machine monitor blob (diagnostic; must never break the poll).
@@ -1438,25 +1266,23 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         The slot is checked against what the machine offers first: a slot its
         display does not list is refused before anything reaches the cloud.
         With no catalogue at all (nothing per profile was published) the
-        machine is left to decide. The new value is set optimistically once the
-        write is accepted; the reply the machine leaves on the response channel
-        then confirms it or rolls it back (``_update_active_profile``), and a
-        reply that never comes rolls it back after ``PROFILE_REPLY_TIMEOUT``.
+        machine is left to decide.
+
+        Send only: the machine's answer is not tracked. Whatever it leaves on
+        the response channel is visible on the Last Captured Command sensor's
+        ``last_machine_response_hex`` attribute, and that is deliberately as
+        far as it goes - a profile changed on the machine's own panel produces
+        no cloud traffic at all (proven on the reference PrimaDonna Soul,
+        2026-09-09: a panel switch left the monitor bytes and both command
+        channels unchanged while the machine was online and publishing), so any
+        state kept here would be a guess that can stay wrong for hours. Hence
+        buttons, which claim to know nothing, and no select.
         """
         slots = sorted(self.user_profile_labels())
         if slots and profile_id not in slots:
             raise self.unknown_profile_error(profile_id, slots)
         self._ensure_machine_reachable()
         ts = int(time.time())
-
-        def _set_optimistic() -> None:
-            # A second switch before the first was answered keeps the original
-            # fallback: the value in between was never confirmed, so a refusal
-            # must not "restore" it.
-            if self._profile_request_ts is None:
-                self._profile_before_request = self.active_user_profile
-            self.active_user_profile = profile_id
-            self._profile_request_ts = ts
 
         if not self.profile.uses_cloud_session:
 
@@ -1482,7 +1308,6 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Sending PROFILE cmd via %s: profile=%d value=%s", prop, profile_id, value
                 )
                 await self.client.async_set_property_value(self.device.dsn, prop, value)
-                _set_optimistic()
                 await self.async_request_refresh()
 
             await self._with_cloud_session(_do)
@@ -1494,7 +1319,6 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except ValueError as err:
                 raise self.unknown_profile_error(profile_id, slots) from err
             await self._send_property_command(value, "PROFILE cmd")
-            _set_optimistic()
 
         await self._with_cloud_session(_do)
 

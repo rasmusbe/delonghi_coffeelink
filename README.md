@@ -22,12 +22,11 @@ Any DeLonghi coffee machine exposed by the Coffee Link mobile app through Ayla N
 
 - 21 beverage buttons (Espresso, Cappuccino, Latte Macchiato, Hot Water, Tea, etc.)
 - **Wake** and **Standby** buttons (power the machine on / off remotely)
-- **Profile** select - switches the machine's active user profile, the same
-  switch the Coffee Link app offers. Options are the machine's own profile
-  names when it publishes them, otherwise `Profile 1..N`. Shows the profile
-  the machine last acknowledged over the cloud; a switch made on the panel, or
-  by the app over Bluetooth, is not visible until the machine next reports over
-  the cloud.
+- **Profile** buttons - one per user profile the machine offers, named as the
+  household named them; pressing one switches the machine to that profile. They
+  are buttons rather than a dropdown because the machine never reports which
+  profile is active: a change made on its own panel produces no cloud traffic at
+  all, so anything claiming to show the current profile would be guessing.
 - Counter sensors: lifetime totals split the way the machine actually splits
   them (black / coffee+milk / milk-only / other), per-drink counters, water and
   filter volumes in litres, descale status
@@ -77,8 +76,8 @@ learned (e.g. the wake frame) - so once the Wake teach step above is done, the
 **Standby** button works too.
 
 **Profile**
-The **Profile** select synthesizes its frame the same way standby does (family
-`a9 f0`, the same 4-byte session tail appended), so it needs the same one-time
+The **Profile** buttons synthesize their frame the same way standby does (family
+`a9 f0`, the same 4-byte session tail appended), so they need the same one-time
 Wake teach step. Profile switching is **untested on the Eletta** over the cloud -
 the frame is verified against a capture of the official app on the Soul only.
 If you have an Eletta, open an issue with the result.

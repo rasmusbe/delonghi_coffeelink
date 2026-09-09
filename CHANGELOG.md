@@ -5,13 +5,10 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- **A Profile select switches the machine's active user profile** - the same
-  switch the official Coffee Link app offers, as a `select` entity per machine
-  (`select.<machine>_profile`, config category). The options are the machine's
-  own profile names when the catalogue carries them, otherwise `Profile N`,
-  which is the machine's own default naming; when two slots share a name the
-  label gets the slot appended, so two `Profile 2` never collapse into one
-  option.
+- **A button per user profile switches the machine's active profile** - the same
+  switch the official Coffee Link app offers. One button per profile the machine
+  offers, carrying the household's own name for it (`button.<machine>_profile_anna`),
+  in the config category.
 
   The frame pair, verified byte for byte against a capture of the official app
   (`tests/fixtures/soul_properties.json`): the request is
@@ -20,71 +17,46 @@ All notable changes to this project will be documented in this file.
   `d0 07 a9 f0 <profile> <status> <crc16> <ts>` on the response property
   (`data_response`), `status 00` meaning accepted. In the fixture the request
   reads exactly `0d 06 a9 f0 01 d7 c0 69 e8 c5 ee` and the reply
-  `d0 07 a9 f0 01 00 3b 3c 69 e8 c5 f0`.
+  `d0 07 a9 f0 01 00 3b 3c 69 e8 c5 f0`. The machine's answer to a press shows
+  up on the Last Captured Command sensor, as `last_machine_response_hex`.
 
-  The reply is what the entity believes, not the request. Selecting an option
-  sets it optimistically and sends the frame; the next cloud reply either
-  confirms it or, on a non-zero status, reverts it with a warning; a reply that
-  never comes reverts it after 120 s. A reply stamped more than 60 s before our
-  own request is ignored (the machine stamps its reply with its own clock, so a
-  margin is needed), which keeps a stale acknowledgement of the previous profile
-  from overwriting a change that is still in flight, and a slot the display
-  does not offer is never accepted, so the entity never holds a state its own
-  option list lacks. Requesting such a slot raises `unknown_profile` naming the
-  slots the machine does offer. Attributes:
-  `profile_slot`, `profile_read_at`, `profile_slots`, `pending`.
+  **Buttons rather than a `select`, because the machine will not say which
+  profile is active.** A change made on its own panel produces no cloud traffic
+  whatsoever. Measured on the reference Soul on 2026-09-09, with the machine
+  online and publishing: across a panel switch the monitor blob kept advancing
+  its timestamp (08:37:39, 08:38:11, 08:41:40) while its contents stayed
+  byte-identical at `00 00 00 00 00 07 00 00 00 00 00 00 00`, and both command
+  channels stayed frozen at 08:30:55 and 08:30:56. The three contents bytes
+  nothing decodes are not the profile, and no other datapoint moves either. A
+  `select` exists to show the current option, so it would have shown a value
+  that can be silently wrong for hours - and worse, Home Assistant's dropdown
+  does not re-send the option it already displays, so the one profile you could
+  not set from it would be the one it wrongly believed was already active. A
+  button claims nothing and is always pressable.
 
-  The options are the profiles the machine's own display offers. The name
-  blobs (`a4 f0`, and `aa f0` for custom slots) turn out to be 21-byte cells
-  per slot - 20 bytes of NUL-padded UTF-16BE text plus one metadata byte, an
-  icon id on profiles - read off an untruncated reference Soul on 2026-09-08;
-  the old parser stopped at the first NUL and named slot 1 only. The same
-  machine shows three profiles yet publishes recipes and priority lists for
-  five, and its name blob for slots 4-5 is a bare NUL: those slots are firmware
-  capacity. The cell, not the name, is therefore what makes a slot an option:
-  a slot with a cell is offered (under `Profile N` when the cell is blank), a
-  slot without one never is. The `Profile N` fallback for every witnessed slot
-  is for a machine whose name blobs cannot be read at all, such as the
-  truncated reference dump.
+  Which profiles get a button: the ones the machine gave a name cell. The name
+  blobs (`a4 f0`, and `aa f0` for custom slots) turn out to be 21-byte cells per
+  slot - 20 bytes of NUL-padded UTF-16BE text plus one metadata byte, an icon id
+  on profiles - read off an untruncated reference Soul on 2026-09-08; the old
+  parser stopped at the first NUL and named slot 1 only. That machine shows
+  three profiles yet publishes recipes and priority lists for five, and its name
+  blob for slots 4-5 is a bare NUL, so those two are firmware capacity rather
+  than choices. A slot with a blank cell still gets a button, labelled with the
+  machine's own default `Profile N`. Only a machine whose name blobs cannot be
+  read at all, such as the truncated reference dump, falls back to a button for
+  every witnessed slot. Pressing a button for a slot the machine does not offer
+  raises `unknown_profile`, naming the ones it does.
 
-  The current option is the profile the machine last acknowledged **over the
-  cloud**. A switch made any other way is invisible until the machine next
-  reports over the cloud: the panel produces no cloud traffic, and the app
-  talks to the machine over Bluetooth when the phone is in range, which never
-  reaches the Ayla cloud this integration reads. A switch we send that the
-  machine never acknowledges (the app was holding the machine, say) rolls back
-  after 120 s rather than showing `pending` for good.
-
-  On the Eletta Explore the frame is synthesized with the same 4-byte session
-  tail standby carries, but profile switching is **untested** on
-  the Eletta over the cloud. The `a9f0` family stays excluded from the Dump
-  Recipe Datapoints diagnostic.
+  On the Eletta Explore the frame carries the same 4-byte session tail standby
+  carries, but profile switching is **untested** on the Eletta over the cloud.
+  The `a9f0` family stays excluded from the Dump Recipe Datapoints diagnostic.
 
 ### Changed
 - **Removed an unused duplicate `PLATFORMS` list from `const.py`.** Two lists
-  with the same name and no reader for one of them is exactly how a new platform
-  gets added to the wrong one; the select platform is registered in the single
-  list `__init__.py` actually loads.
+  with the same name, one of them read by nothing, is exactly how a new platform
+  ends up registered in the wrong one. Only the list `__init__.py` loads remains.
 
 ### Fixed
-- **A dropped connection no longer reads as every button being pressed.** One
-  Ayla 504 took the whole platform unavailable; 30 s later the next poll
-  succeeded and the buttons returned to `unknown`. The logbook drew that as
-  every button on the machine being pressed in the same second, because it
-  labels *every* state change of a `button` entity "Pressed" - there is no
-  other word for the domain (frontend `src/data/logbook.ts`,
-  `STATE_ACTION_MESSAGES`). Nothing was sent to the machine, but a `state`
-  trigger watching a button did fire, so an automation keyed on one could act
-  on a cloud hiccup.
-
-  Buttons no longer follow the coordinator's availability. A button has no state
-  of its own to lose - its state is the timestamp of the last press - so taking
-  it unavailable bought nothing and cost the false entry. Whether a command can
-  actually reach the machine was never this flag's job: the coordinator
-  preflight still refuses to write to a machine the cloud reports Offline, and
-  raises an error the user sees. Connection health remains on the Connection and
-  Machine Status sensors, which is where it is readable.
-
 - **Every Ayla call is now bounded by a 30 s timeout, and a timeout is now
   retried like any other transient failure.** The session comes from Home
   Assistant, which inherits aiohttp's 300 s default - not unbounded, but far too
