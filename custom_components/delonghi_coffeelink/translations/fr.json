@@ -174,6 +174,9 @@
       },
       "total_mug_to_go": {
         "name": "Total mug to go"
+      },
+      "monitor_published": {
+        "name": "Statut publié le"
       }
     },
     "button": {
@@ -333,6 +336,21 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} est hors ligne sur le cloud De'Longhi et ne peut pas recevoir de commandes. Vérifiez que la machine est alimentée au secteur et connectée au Wi-Fi (application Coffee Link), puis réessayez."
+    },
+    "no_machine_configured": {
+      "message": "Aucune machine De'Longhi n'est configurée, il n'y a donc rien à qui envoyer cette commande."
+    },
+    "target_required": {
+      "message": "Ce compte comporte plusieurs machines ({machines}) : la commande doit préciser laquelle. Choisissez un appareil comme cible de l'action - sinon elle partirait vers toutes."
+    },
+    "target_not_a_machine": {
+      "message": "{device} n'est pas une machine à café De'Longhi gérée par cette intégration. Machines disponibles : {machines}."
+    },
+    "machine_unavailable": {
+      "message": "{device} est bien une machine De'Longhi, mais son compte n'est pas chargé actuellement : la commande ne peut pas être envoyée. Machines disponibles : {machines}."
+    },
+    "target_matched_no_machine": {
+      "message": "La cible de cette action ne contient aucune machine à café De'Longhi. Machines disponibles : {machines}."
     },
     "unknown_profile": {
       "message": "{name} n'a pas de profil utilisateur {profile}. Profils exposés par cette machine : {known}."

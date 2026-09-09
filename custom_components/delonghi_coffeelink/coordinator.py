@@ -6,7 +6,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -57,11 +57,13 @@ from .const import (
     DOMAIN,
     INTEGRATION_CLOUD_APP_ID,
     MONITOR_KEEPALIVE_INTERVAL,
+    MONITOR_MAX_AGE,
     MONITOR_PROPERTY_CANDIDATES,
     REACHABILITY_MAX_AGE,
     RECIPE_STORE_SAVE_DELAY,
     RECIPE_STORE_VERSION,
     RESPONSE_PROPERTY_CANDIDATES,
+    TRANSIENT_FAILURE_TOLERANCE,
     normalize_connection_status,
 )
 from .model_profiles import profile_for
@@ -115,6 +117,8 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # occurrence instead of surfacing as a frozen status days later.
         self._keepalive_failures = 0
         self._keepalive_armed = False
+        # Consecutive failed polls currently being ridden out; reset on success.
+        self._consecutive_failures = 0
         self._session_confirmed = False
         self._session_connect_lock = asyncio.Lock()
         self._session_cold_task: asyncio.Task[None] | None = None
@@ -150,6 +154,10 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Status sensor; which datapoint it comes from is resolved per model
         # (see MONITOR_PROPERTY_CANDIDATES). Empty dict until a blob parses.
         self.monitor: dict[str, Any] = {}
+        # When the machine last PUBLISHED that monitor blob, per Ayla's own
+        # `data_updated_at`. Not when we last read it: a successful poll of a
+        # fossilised datapoint is the failure this exists to catch.
+        self.monitor_updated_at: datetime | None = None
         # The machine's own beverage catalogue, parsed from the recipe datapoints
         # already present in every poll (see catalog.py). Read-only for now: it
         # widens the learn gate and feeds the diagnostic dump, and creates no
@@ -171,6 +179,47 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await super().async_shutdown()
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Poll the cloud, riding out a short run of transient failures.
+
+        Ayla's endpoints intermittently answer 504/503. The HTTP layer retries
+        those (see ayla_client._request_json); this catches a blip that outlives
+        the retries. Rather than let one bad poll mark the whole device
+        unavailable, keep serving the last good snapshot for up to
+        TRANSIENT_FAILURE_TOLERANCE consecutive failures.
+
+        Why this matters more than it looks: `CoordinatorEntity.available` is
+        just `coordinator.last_update_success`, so one UpdateFailed flips every
+        entity this coordinator owns, and the recovery write is indistinguishable
+        from a real event on entity types whose state IS an event. The logbook
+        duly reports every beverage button as "Pressed", twice, on a machine
+        nobody touched.
+
+        Deliberately NOT silent: each tolerated failure logs a warning, so a real
+        outage is visible from the first poll rather than only after ~2 min. The
+        first refresh is never tolerated - with no previous data there is nothing
+        to serve, and setup must fail honestly with ConfigEntryNotReady.
+        """
+        try:
+            props = await self._fetch_once()
+        except UpdateFailed as err:
+            self._consecutive_failures += 1
+            if (
+                self._consecutive_failures <= TRANSIENT_FAILURE_TOLERANCE
+                and self.data is not None
+            ):
+                _LOGGER.warning(
+                    "Delonghi poll failed (%d/%d tolerated), serving last known "
+                    "data to keep entities available: %s",
+                    self._consecutive_failures,
+                    TRANSIENT_FAILURE_TOLERANCE,
+                    err,
+                )
+                return self.data
+            raise
+        self._consecutive_failures = 0
+        return props
+
+    async def _fetch_once(self) -> dict[str, Any]:
         """Fetch all properties + refresh device meta."""
         try:
             props = await self.client.async_get_properties(self.device.dsn)
@@ -406,9 +455,38 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 self.monitor_property = name
             self.monitor = monitor
+            self.monitor_updated_at = self._published_at(props.get(name))
         except Exception:  # noqa: BLE001 - diagnostic must not break polling
             _LOGGER.debug("Monitor parse failed (non-fatal)", exc_info=True)
             self.monitor = {}
+
+    @staticmethod
+    def _published_at(prop: Any) -> datetime | None:
+        """Ayla's `data_updated_at` for one property, as an aware datetime."""
+        raw = prop.get("data_updated_at") if isinstance(prop, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @property
+    def monitor_age(self) -> float | None:
+        """Seconds since the machine last published its monitor blob."""
+        if self.monitor_updated_at is None:
+            return None
+        return (datetime.now(timezone.utc) - self.monitor_updated_at).total_seconds()
+
+    @property
+    def monitor_is_stale(self) -> bool:
+        """True when the monitor datapoint is too old to be reported as current.
+
+        Fails OPEN: with no timestamp from the cloud there is no evidence of
+        silence, and inventing staleness would be its own kind of lie.
+        """
+        age = self.monitor_age
+        return age is not None and age > MONITOR_MAX_AGE
 
     def _detect_property(
         self,
@@ -1349,16 +1427,21 @@ class DelonghiCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._with_cloud_session(_do)
 
 
-async def async_send_to_all(
+async def async_send_to_each(
     coordinators: list[DelonghiCoordinator],
     send: Callable[[DelonghiCoordinator], Awaitable[None]],
 ) -> None:
-    """Run one command on every machine, then report the first failure.
+    """Run one command on each machine given, then report the first failure.
 
-    A service call addresses every machine of the config entry, so one machine
-    failing - unreachable, a cloud 5xx, an expired token - must not swallow the
-    others: every coordinator is attempted, and the first exception is re-raised
-    afterwards so the caller still learns something did not go through.
+    "each", not "all": the caller passes the machines a service call actually
+    resolved to. It was named `to_all` when a call went to every machine on the
+    account, which was the bug - a reader skimming the handlers would reasonably
+    have concluded the fan-out was still there.
+
+    One machine failing - unreachable, a cloud 5xx, an expired token - must not
+    swallow the others: every coordinator is attempted, and the first exception
+    is re-raised afterwards so the caller still learns something did not go
+    through.
     """
     errors: list[Exception] = []
     for coord in coordinators:

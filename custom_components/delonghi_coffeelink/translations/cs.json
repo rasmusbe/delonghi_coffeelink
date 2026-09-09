@@ -70,6 +70,7 @@
           "unknown": "Neznámý stav"
         }
       },
+      "monitor_published": { "name": "Stav naposledy odeslán" },
       "machine_status": {
         "name": "Stav kávovaru",
         "state": {
@@ -189,6 +190,21 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} je v cloudu De'Longhi offline a nemůže přijímat příkazy. Zkontrolujte, zda je kávovar připojen k elektrické síti a k Wi-Fi (aplikace Coffee Link), a zkuste to znovu."
+    },
+    "no_machine_configured": {
+      "message": "Není nastaven žádný kávovar De'Longhi, kterému by se tento příkaz dal poslat."
+    },
+    "target_required": {
+      "message": "K tomuto účtu patří více kávovarů ({machines}), takže příkaz musí určit, kterému. Vyberte zařízení jako cíl akce - jinak by šel na všechny."
+    },
+    "target_not_a_machine": {
+      "message": "{device} není kávovar De'Longhi spravovaný touto integrací. Dostupné kávovary: {machines}."
+    },
+    "machine_unavailable": {
+      "message": "{device} je kávovar De'Longhi, ale jeho účet právě není načten, takže příkaz nelze odeslat. Dostupné kávovary: {machines}."
+    },
+    "target_matched_no_machine": {
+      "message": "Cíl této akce neobsahuje žádný kávovar De'Longhi. Dostupné kávovary: {machines}."
     },
     "unknown_profile": {
       "message": "{name} nemá uživatelský profil {profile}. Profily, které tento kávovar nabízí: {known}."

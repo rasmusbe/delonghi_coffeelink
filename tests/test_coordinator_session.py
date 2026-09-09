@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime as dt
 import importlib.util
-import json
+import json as jsonlib
 import logging
 import sys
 import time
@@ -89,8 +90,7 @@ class _StubCoordinatorEntity:
     """helpers.update_coordinator.CoordinatorEntity.
 
     Only the part under test is reproduced: HA's own class ties `available` to
-    the coordinator's last poll, which is what a button never has to care about
-    - it claims to know nothing, so it stays pressable.
+    the coordinator's last poll, which is exactly what button.py overrides.
     """
 
     def __init__(self, coordinator, context=None) -> None:
@@ -105,11 +105,10 @@ class _StubCoordinatorEntity:
 
 
 class _StubButtonEntity:
-    """components.button.ButtonEntity - a bare base; the entity's own attributes
-    and its async_press are all these tests exercise."""
+    """components.button.ButtonEntity - a bare base; the _attr_* are plain."""
 
     _attr_has_entity_name = False
-    name = None
+    name = None  # Entity.name, read by the press-time log line
 
 
 def _install_stubs() -> None:
@@ -123,7 +122,7 @@ def _install_stubs() -> None:
     upd.DataUpdateCoordinator = _StubCoordinator
     upd.CoordinatorEntity = _StubCoordinatorEntity
     upd.UpdateFailed = type("UpdateFailed", (Exception,), {})
-    # The entity platform: button.py is loaded here too, so its imports resolve.
+    # The entity platforms: button.py is loaded here too, so its imports resolve.
     button_mod = types.ModuleType("homeassistant.components.button")
     button_mod.ButtonEntity = _StubButtonEntity
     config_entries = types.ModuleType("homeassistant.config_entries")
@@ -709,11 +708,18 @@ def test_a_corrupt_blob_never_breaks_the_poll():
 
 
 class _FakeResponse:
-    def __init__(self, payload) -> None:
+    def __init__(self, payload, status: int = 200, content_type: str = "application/json") -> None:
         self._payload = payload
+        self.status = status
+        self.content_type = content_type
 
     async def json(self):
         return self._payload
+
+    async def text(self):
+        if isinstance(self._payload, str):
+            return self._payload
+        return jsonlib.dumps(self._payload)
 
     async def __aenter__(self):
         return self
@@ -723,16 +729,32 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """aiohttp.ClientSession.get(), enough for async_get_devices.
+    """aiohttp.ClientSession, enough for the client's read paths.
 
     ``timeout`` is accepted and recorded rather than ignored: every Ayla call is
     supposed to carry one, and a stub that silently swallowed the argument would
     let that guarantee rot.
     """
 
-    def __init__(self, payload) -> None:
+    def __init__(self, payload, responses: list | None = None) -> None:
         self._payload = payload
         self.timeouts: list = []
+        self._responses = list(responses or [])
+        self.calls: list[tuple[str, str]] = []
+
+    def request(self, method, url, headers=None, json=None, data=None,
+                timeout=None):
+        """Every Ayla read goes through ``_request_json`` -> ``request()``.
+
+        A canned list of responses lets a test replay a gateway error followed
+        by a good answer; ``timeout`` is recorded here too, since this is now
+        the call site that carries it for the polling paths.
+        """
+        self.timeouts.append(timeout)
+        self.calls.append((method, url))
+        if self._responses:
+            return self._responses.pop(0)
+        return _FakeResponse(self._payload)
 
     def get(self, url, headers=None, timeout=None):
         self.timeouts.append(timeout)
@@ -822,7 +844,7 @@ def test_every_machine_is_attempted_before_the_error_surfaces():
 
     with pytest.raises(ac.CloudError):
         asyncio.run(
-            coordinator.async_send_to_all(
+            coordinator.async_send_to_each(
                 [boom, ok_a, ok_b], lambda coord: coord.async_send_wake()
             )
         )
@@ -837,7 +859,7 @@ def test_a_cloud_error_is_not_swallowed():
 
     with pytest.raises(ac.AuthError):
         asyncio.run(
-            coordinator.async_send_to_all([boom], lambda coord: coord.async_send_wake())
+            coordinator.async_send_to_each([boom], lambda coord: coord.async_send_wake())
         )
 
 
@@ -847,7 +869,7 @@ def test_the_offline_refusal_still_surfaces_through_the_fan_out():
 
     with pytest.raises(_StubHomeAssistantError) as err:
         asyncio.run(
-            coordinator.async_send_to_all(
+            coordinator.async_send_to_each(
                 [offline, online], lambda coord: coord.async_send_wake()
             )
         )
@@ -861,7 +883,7 @@ def test_nothing_is_raised_when_every_machine_takes_it():
     coords = [_coord("DL-millcore", client=_RecordingClient()) for _ in range(3)]
 
     asyncio.run(
-        coordinator.async_send_to_all(coords, lambda coord: coord.async_send_wake())
+        coordinator.async_send_to_each(coords, lambda coord: coord.async_send_wake())
     )
 
     assert [len(coord.client.writes) for coord in coords] == [1, 1, 1]
@@ -1332,14 +1354,272 @@ def test_no_call_site_is_left_without_a_timeout():
     The per-call kwarg is easy to forget - the first pass at this covered seven
     of eight sites - so the source is checked directly rather than relying on a
     test happening to exercise every path.
+
+    Counted rather than pinned to a number: routing the polling reads through
+    ``_request_json`` legitimately removed two direct call sites, and a test
+    that fails when a call site is *deleted* only trains people to bump the
+    constant. What must hold is that every site left carries the timeout.
     """
     import re
 
     source = (PKG_DIR / "ayla_client.py").read_text(encoding="utf-8")
     calls = re.findall(r"self\._session\.(?:get|post|request)\((.*?)\) as resp", source, re.S)
-    assert len(calls) == 8, f"expected 8 call sites, found {len(calls)}"
+    assert calls, "the call-site regex matched nothing - it has drifted from the source"
     for args in calls:
         assert "timeout=_TIMEOUT" in args, f"unbounded Ayla call: {args[:80]}"
+
+
+# --- buttons: availability (logbook "Pressed" storm) ------------------------
+
+def _buttons(coord):
+    """One instance of every button class the platform registers."""
+    bev_id, key, friendly, icon = const.BEVERAGES[0]
+    return [
+        button.DelonghiStartBeverageButton(coord, bev_id, key, friendly, icon),
+        button.DelonghiWakeButton(coord),
+        button.DelonghiStandbyButton(coord),
+        button.DelonghiStopButton(coord),
+        button.DelonghiDumpRecipesButton(coord),
+    ]
+
+
+def test_the_stub_still_ties_availability_to_the_poll():
+    """Control group: without the override, a failed poll takes an entity out.
+
+    Everything below asserts that buttons do NOT follow the coordinator, which
+    would pass just as well against a stub that never made anything unavailable.
+    """
+
+    class _Plain(_StubCoordinatorEntity):
+        pass
+
+    coord = _coord("DL-millcore")
+    entity = _Plain(coord)
+    assert entity.available is True
+    coord.last_update_success = False
+    assert entity.available is False
+
+
+def test_buttons_stay_available_across_a_failed_poll():
+    """The logbook renders every button state change as "Pressed".
+
+    A single Ayla 504 took the whole platform unavailable, and the return trip
+    to `unknown` 30 s later was drawn as every button being pressed in the same
+    second - and fires any `state` trigger watching them. Nothing was sent to
+    the machine; the logbook simply has no other word for a button. Keeping the
+    entities available removes the state change that is being mislabelled.
+    """
+    coord = _coord("DL-millcore")
+    coord.last_update_success = False
+    for entity in _buttons(coord):
+        assert entity.available is True, f"{type(entity).__name__} went unavailable"
+
+
+def test_an_available_button_still_refuses_an_offline_machine():
+    """Availability is not the guard - the coordinator preflight is.
+
+    This is what makes the constant `available` safe: pressability says nothing
+    about whether the command will be sent, and an Offline machine still gets
+    the refusal (with a user-visible error) rather than a write Ayla accepts and
+    never delivers.
+    """
+    coord = _coord("DL-millcore", connection_status="Offline", client=_RecordingClient())
+    coord.last_update_success = False
+    entity = _buttons(coord)[0]
+    assert entity.available is True
+    with pytest.raises(_StubHomeAssistantError):
+        asyncio.run(entity.async_press())
+    assert coord.client.writes == []
+
+
+# --- transient cloud failures must not flap every entity --------------------
+#
+# Ayla answers 504/503 with a text/plain body often enough to matter (ten blips
+# in seven days on the reference machine, each exactly one poll long). The cost
+# is out of all proportion to the fault: CoordinatorEntity.available is just
+# coordinator.last_update_success, so one UpdateFailed takes every entity of the
+# device unavailable and the next poll brings them all back - and the logbook
+# renders both edges of a `button` as "Pressed", inventing a full sweep of
+# beverage presses on a machine nobody touched.
+
+class _FlakyClient(_PollingClient):
+    """A polling client whose next N property reads blow up."""
+
+    def __init__(self, failures: int = 0, **kw) -> None:
+        super().__init__(**kw)
+        self.failures = failures
+        self.calls = 0
+
+    async def async_get_properties(self, dsn: str) -> dict:
+        self.calls += 1
+        if self.failures > 0:
+            self.failures -= 1
+            raise RuntimeError("504, message='Attempt to decode JSON with "
+                               "unexpected mimetype: text/plain'")
+        return self.props
+
+
+def _primed(client):
+    """A coordinator that has already completed one successful poll."""
+    coord = _coord("DL-millcore", client=client)
+    coord.data = asyncio.run(coord._async_update_data())
+    assert coord.data is not None
+    return coord
+def test_a_single_transient_failure_keeps_the_last_good_data():
+    """The measured case: one 504, recovered on the next poll."""
+    client = _FlakyClient(props={"d700_tot_bev_b": {"value": 4638}})
+    coord = _primed(client)
+    good = coord.data
+
+    client.failures = 1
+    assert asyncio.run(coord._async_update_data()) is good  # same object, not a refetch
+    assert coord._consecutive_failures == 1
+
+    coord.data = asyncio.run(coord._async_update_data())
+    assert coord._consecutive_failures == 0
+
+
+def test_a_sustained_outage_is_still_reported():
+    """Tolerance must not become a mute button: the 4th failure gives up."""
+    client = _FlakyClient(props={"d700_tot_bev_b": {"value": 4638}})
+    coord = _primed(client)
+
+    client.failures = 99
+    for _ in range(const.TRANSIENT_FAILURE_TOLERANCE):
+        asyncio.run(coord._async_update_data())
+    with pytest.raises(coordinator.UpdateFailed):
+        asyncio.run(coord._async_update_data())
+
+
+def test_the_tolerance_budget_resets_after_a_success():
+    """Two blips, a good poll, then three more must not trip the limit."""
+    client = _FlakyClient(props={"d700_tot_bev_b": {"value": 4638}})
+    coord = _primed(client)
+
+    client.failures = 2
+    asyncio.run(coord._async_update_data())
+    asyncio.run(coord._async_update_data())
+    coord.data = asyncio.run(coord._async_update_data())   # recovery
+    assert coord._consecutive_failures == 0
+
+    client.failures = const.TRANSIENT_FAILURE_TOLERANCE
+    for _ in range(const.TRANSIENT_FAILURE_TOLERANCE):
+        asyncio.run(coord._async_update_data())            # no raise
+
+
+def test_the_very_first_poll_is_never_tolerated():
+    """With no previous snapshot there is nothing to serve - setup must fail."""
+    client = _FlakyClient(failures=1, props={})
+    coord = _coord("DL-millcore", client=client)
+    assert coord.data is None
+    with pytest.raises(coordinator.UpdateFailed):
+        asyncio.run(coord._async_update_data())
+
+
+def test_a_gateway_error_with_a_text_body_is_retried_not_raised():
+    """The exact shape that used to escape as an unretryable ContentTypeError.
+
+    Ayla answers 504 with a ``text/plain`` body. The old async_get_devices /
+    async_get_properties called ``resp.json()`` directly with no status check, so
+    aiohttp raised ContentTypeError and the retry loop - which existed, and was
+    correct - never saw it because those paths bypassed it entirely.
+    """
+    good = [{"device": {"dsn": "AC000W019023280", "product_name": "x",
+                        "oem_model": "DL-millcore", "model": "AY008ESP1",
+                        "sw_version": "ADA 1.5.3", "lan_ip": "10.0.0.1",
+                        "connection_status": "Online",
+                        "connected_at": "2026-08-12T04:01:46Z"}}]
+    session = _FakeSession(good, responses=[
+        _FakeResponse("504 Gateway Time-out", status=504, content_type="text/plain"),
+        _FakeResponse(good),
+    ])
+    client = ac.DelonghiAylaClient(session, "user@example.com", "secret")
+    client._access_token = "token"
+    client._expires_at = time.time() + 3600
+
+    devices = asyncio.run(client.async_get_devices())
+
+    assert [d.dsn for d in devices] == ["AC000W019023280"]
+    assert len(session.calls) == 2, "the 504 must have been retried, not surfaced"
+
+
+# --- monitor staleness ------------------------------------------------------
+#
+# The failure this catches, observed on the reference PrimaDonna Soul: the
+# machine's cloud link wedged, and for 44 hours Home Assistant reported a
+# confident `standby`. Everything looked healthy - `connection_status: Online`,
+# every entity available, every poll succeeding - because polling proves the
+# INTEGRATION is alive, never that the DATA is. Of 311 datapoints the only two
+# written in that window were the two the integration writes itself. The
+# automations keyed on Machine Status simply never fired, and nothing said why.
+#
+# Ayla timestamps every datapoint; the integration received `data_updated_at` on
+# every poll and discarded it.
+
+def _aged_monitor_props(age_seconds: float | None, blob: str = SOUL_MONITOR_BLOB):
+    props = _monitor_props(d302_monitor=blob)
+    if age_seconds is not None:
+        published = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=age_seconds)
+        props["d302_monitor"]["data_updated_at"] = (
+            published.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+    return props
+
+
+def _polled(props):
+    client = _PollingClient(props=props)
+    coord = _coord("DL-millcore", client=client)
+    asyncio.run(coord._async_update_data())
+    return coord
+
+
+def test_the_publish_time_of_the_monitor_datapoint_is_captured():
+    coord = _polled(_aged_monitor_props(5))
+    assert coord.monitor_updated_at is not None
+    assert coord.monitor_age < 60
+
+
+def test_a_freshly_published_monitor_is_not_stale():
+    coord = _polled(_aged_monitor_props(5))
+    assert coord.monitor_is_stale is False
+
+
+def test_a_monitor_older_than_the_limit_is_stale():
+    coord = _polled(_aged_monitor_props(const.MONITOR_MAX_AGE + 60))
+    assert coord.monitor_is_stale is True
+
+
+def test_a_44_hour_old_monitor_is_stale():
+    """The real observed case, not a synthetic edge."""
+    coord = _polled(_aged_monitor_props(44 * 3600))
+    assert coord.monitor_is_stale is True
+    assert coord.monitor_age > 44 * 3600 - 60
+
+
+def test_staleness_fails_open_when_the_cloud_sends_no_timestamp():
+    """No evidence of silence is not evidence of silence."""
+    coord = _polled(_aged_monitor_props(None))
+    assert coord.monitor_updated_at is None
+    assert coord.monitor_age is None
+    assert coord.monitor_is_stale is False
+
+
+def test_an_unparseable_timestamp_is_not_treated_as_stale():
+    props = _monitor_props(d302_monitor=SOUL_MONITOR_BLOB)
+    props["d302_monitor"]["data_updated_at"] = "not a date"
+    coord = _polled(props)
+    assert coord.monitor_is_stale is False
+
+
+def test_a_stale_datapoint_still_decodes_and_does_not_fail_the_poll():
+    """Staleness is a judgement about age, not a parse failure.
+
+    The blob is still good - the machine simply stopped sending new ones - so the
+    decode must succeed and the poll must not raise. Only the reporting changes.
+    """
+    coord = _polled(_aged_monitor_props(44 * 3600))
+    assert coord.monitor.get("status_name") == "standby"
+    assert coord.monitor_is_stale is True
 
 
 # --- user profile: sending the switch (one button per profile) ---------------
@@ -1356,7 +1636,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "soul_properties.json"
 
 
 def _fixture_props() -> dict:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return jsonlib.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 def _soul_with_catalog(client=None, connection_status: str = "Online"):

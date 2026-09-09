@@ -4,6 +4,17 @@ from __future__ import annotations
 DOMAIN = "delonghi_coffeelink"
 MANUFACTURER = "De'Longhi"
 
+# Where the device page's "Visit" link goes.
+#
+# NOT the machine's own IP, which is what this used to be. The Ayla Wi-Fi module
+# listens on port 80 but serves nothing: every path answers 404, so "Visit" was a
+# dead end on every machine, not just an unlucky one. There is no device web UI
+# to point at, so the link goes where it can actually help - the project, which
+# is also the only place to report what the machine did.
+#
+# Kept in step with `documentation` in manifest.json by a test.
+PROJECT_URL = "https://github.com/actabi/delonghi_coffeelink"
+
 # Extracted from Coffee Link APK v4.9.6
 APP_ID = "DLonghiCoffeeIdKit-sQ-id"
 APP_SECRET = "DLonghiCoffeeIdKit-HT6b0VNd4y6CSha9ivM5k8navLw"
@@ -68,6 +79,18 @@ CLOUD_HTTP_TIMEOUT = 30  # seconds, per request
 CLOUD_HTTP_RETRY_COUNT = 2
 CLOUD_HTTP_RETRY_BACKOFF = 1.5  # seconds; multiplied by attempt index
 CLOUD_TRANSIENT_HTTP_CODES = frozenset({429, 502, 503, 504})
+# Second line of defence, behind the HTTP retry above: keep serving the last good
+# data for this many CONSECUTIVE failed polls before admitting the device is
+# unavailable (~2 min at a 30 s interval).
+#
+# A coordinator's failure blast radius is every entity it owns. One UpdateFailed
+# takes every non-numeric entity of the device `-> unavailable` and the next poll
+# writes them all back - and Home Assistant's logbook renders BOTH edges of a
+# `button` as "Pressed", because a button's state IS its last-press timestamp. So
+# a single gateway hiccup fabricates a full sweep of beverage presses that were
+# never made, on a machine whose lifetime counters never moved. Observed on
+# ECAM610.55: ten such blips in seven days, every one lasting exactly one poll.
+TRANSIENT_FAILURE_TOLERANCE = 3
 
 # Config
 CONF_EMAIL = "email"
@@ -166,6 +189,23 @@ ACTIVE_PROFILE_PROPERTY = "d286_mach_sett_profile"
 # never writes to) and carrying bytes proves nothing either (they could be a
 # stale or truncated packet).
 MONITOR_PROPERTY_CANDIDATES = ["d302_monitor_machine", "d302_monitor"]
+
+# How old the monitor datapoint may get before Machine Status stops asserting it.
+#
+# Polling proves the INTEGRATION is alive, never that the DATA is. The machine
+# publishes its monitor blob only when prompted (issue #14), so a machine whose
+# cloud link has wedged keeps `connection_status: Online`, keeps every entity
+# available, and keeps Machine Status reporting whatever it last said - for days.
+# Observed on a PrimaDonna Soul: the module answered ICMP and Ayla reported it
+# connected, while of 311 datapoints the only two written in 44 h were the two
+# the integration writes itself. Machine Status read a confident `standby`
+# throughout, and the automations keyed on it simply never fired.
+#
+# Ayla timestamps every datapoint with `data_updated_at`; this is the age past
+# which that timestamp is treated as evidence of silence rather than of standby.
+# Generous on purpose - it must clear a poll, the retry budget and a tolerated
+# run of transient failures without ever flapping.
+MONITOR_MAX_AGE = 6 * DEFAULT_SCAN_INTERVAL  # seconds
 
 # How long the cloud's connection_status is trusted enough to REFUSE a command.
 # The status only refreshes on a successful poll, so a cloud outage or a broken

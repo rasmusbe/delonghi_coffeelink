@@ -56,6 +56,151 @@ All notable changes to this project will be documented in this file.
   with the same name, one of them read by nothing, is exactly how a new platform
   ends up registered in the wrong one. Only the list `__init__.py` loads remains.
 
+## [0.3.25] - 2026-09-09
+
+### Fixed
+- **The device page's "Visit" link went to a 404.** It pointed at the machine's
+  own IP. The Ayla Wi-Fi module does listen on port 80 - so the link looked
+  plausible, and DNS and ping both agree - but it serves nothing: every path
+  answers `404 Not Found`, verified on the reference machine. There is no device
+  web UI behind that address on any model.
+
+  The link goes to the project instead, which is where a user clicking it from a
+  machine that is misbehaving actually needs to end up. `lan_ip` is still
+  collected and still reported; it is simply no longer offered as somewhere to
+  click. A test keeps the three platforms - which each build their own
+  `DeviceInfo` - from drifting apart or pointing it back at the machine.
+
+## [0.3.24] - 2026-09-09
+
+### Fixed
+- **A service call no longer goes to every machine on the account (#16).** Asking
+  for one espresso on a two-machine account brewed one on *each* machine, and the
+  code carried the admission as a comment rather than a fix. Two defects behind
+  it: the three service handlers fanned every call out over the whole list, and
+  they closed over a single config entry's coordinators while registering under
+  global names - so with two entries the second registration replaced the first,
+  and the first entry's machines could not be commanded at all.
+
+  The three services now take a device target, resolved at call time across every
+  config entry. The target is **optional on purpose**: with one machine set up it
+  is used, so no existing automation breaks. With several and no target given, the
+  call is refused with an error naming the machines, rather than sent to all of
+  them - the one outcome that cannot be undone once the cups are full. Explicit
+  fan-out is still available by naming several devices in one call.
+
+  `send_raw_command` is targeted the same way and stays reachable; it remains the
+  field-instrumentation escape hatch the reachability preflight never refuses.
+
+  Areas and entities work as targets too, not only devices. Declaring `target:`
+  in `services.yaml` makes Home Assistant offer all of them in the picker and
+  pass the whole target block into the call data - so accepting only `device_id`
+  would have rejected `area_id` with a raw `extra keys not allowed` before any
+  handler ran, on a target the integration's own UI had just offered.
+
+  **Breaking, and only for accounts with more than one machine:** an automation
+  calling one of these services with no target now raises instead of brewing.
+  That was the bug - it used to brew everywhere - but it is a behaviour change,
+  and the fix is to add a target to those automations. Single-machine setups,
+  which is nearly all of them, are untouched.
+
+### Changed
+- **`async_send_to_all` is now `async_send_to_each`.** It is handed the machines
+  a call resolved to, not every machine there is; the old name described the
+  behaviour that was just removed, and a reader skimming the handlers would have
+  concluded the fan-out was still there.
+- **The services are removed when the last account is deleted, not when the last
+  entry unloads.** A reload unloads too, and the entry is still listed at that
+  moment, so unload cannot tell a reload from a deletion. Removing there meant a
+  reload whose setup then failed - `ConfigEntryNotReady` on a cloud 5xx or an
+  auth flap, both routine here - left the services missing for the whole retry
+  backoff, with automations failing on "Service not found".
+
+## [0.3.23] - 2026-09-09
+
+### Fixed
+
+- **A dropped connection no longer reads as every button being pressed.** One
+  Ayla 504 took the whole platform unavailable; 30 s later the next poll
+  succeeded and the buttons returned to `unknown`. The logbook drew that as
+  every button on the machine being pressed in the same second, because it
+  labels *every* state change of a `button` entity "Pressed" - there is no
+  other word for the domain (frontend `src/data/logbook.ts`,
+  `STATE_ACTION_MESSAGES`). Nothing was sent to the machine, but a `state`
+  trigger watching a button did fire, so an automation keyed on one could act
+  on a cloud hiccup.
+
+  Buttons no longer follow the coordinator's availability. A button has no state
+  of its own to lose - its state is the timestamp of the last press - so taking
+  it unavailable bought nothing and cost the false entry. Whether a command can
+  actually reach the machine was never this flag's job: the coordinator
+  preflight still refuses to write to a machine the cloud reports Offline, and
+  raises an error the user sees. Connection health remains on the Connection and
+  Machine Status sensors, which is where it is readable.
+
+- **One Ayla `504` no longer marks every entity unavailable - and no longer
+  invents a full sweep of beverage presses.** `async_get_properties` and
+  `async_get_devices` did a bare `session.get()` + `await resp.json()` with no
+  status check, so a gateway error carrying a `text/plain` body surfaced as an
+  unretryable `aiohttp.ContentTypeError`. The retry helper already existed and
+  already handled `{429, 502, 503, 504}` correctly - reading the body as text
+  *before* parsing - but its docstring said "Eletta session paths only" and the
+  two hot polling paths bypassed it. They now go through it.
+
+  This matters far more than a single failed poll suggests.
+  `CoordinatorEntity.available` is just `coordinator.last_update_success`, so
+  one `UpdateFailed` takes **every** entity of the device to `unavailable` and
+  the next poll writes them all back. Home Assistant's logbook renders **both**
+  edges of a `button` as "Pressed", because a button's state *is* its last-press
+  timestamp - so a single hiccup fabricates a complete list of beverages
+  "brewed", on a machine whose lifetime counters never moved. The numeric
+  counters flap too, but the logbook drops sensors carrying a unit, which is
+  exactly why the artifact looks button-specific and therefore believable.
+
+  Observed on an ECAM610.55: ten such blips in seven days, every one lasting
+  exactly one poll interval.
+
+### Added
+- `TRANSIENT_FAILURE_TOLERANCE` (3): behind the HTTP retry, the coordinator now
+  keeps serving the last good snapshot for up to three consecutive failed polls
+  before letting entities go unavailable. Never silent - each tolerated poll
+  logs a warning, so a genuine outage is visible from the first failure rather
+  than only after two minutes. The first refresh is never tolerated: with no
+  previous data there is nothing to serve, and setup must still fail with
+  `ConfigEntryNotReady`.
+
+  `async_set_property_value` is **deliberately left un-retried**. It is the
+  command channel; a blind POST retry there could brew two coffees. It already
+  checks `resp.status` before parsing, so it raises a clean `CloudError`.
+
+- **Machine Status no longer reports a value the machine stopped publishing.**
+  Polling proves the *integration* is alive, never that the *data* is. Because
+  the machine only publishes its monitor blob when prompted (#14), a machine
+  whose cloud link has wedged keeps `connection_status: Online`, keeps every
+  entity available, keeps every poll succeeding - and keeps Machine Status
+  reporting whatever it last said, for days.
+
+  Observed on the reference PrimaDonna Soul: the module answered ICMP, the
+  router saw it on the network, Ayla reported it connected - and of its **311
+  datapoints the only two written in 44 hours were the two the integration
+  writes itself**. Machine Status read a confident `standby` throughout. The
+  automations keyed on it never fired, and nothing anywhere said why.
+
+  Ayla timestamps every datapoint with `data_updated_at`. The integration
+  received it on every poll and discarded it. It is now kept, and past
+  `MONITOR_MAX_AGE` (6 polling intervals) Machine Status reports `unknown`
+  instead of asserting a fossil. Staleness **fails open**: with no timestamp
+  from the cloud there is no evidence of silence, and inventing it would be its
+  own kind of lie.
+
+### Added
+- **`Status Last Published`** (diagnostic, timestamp): when the machine last
+  published its status, as opposed to when the integration last read it. This is
+  the one value that separates "the machine is resting" from "the machine has
+  gone quiet" - Machine Status looks identical either way. Worth an alert.
+
+## [0.3.22] - 2026-09-09
+
 ### Fixed
 - **Every Ayla call is now bounded by a 30 s timeout, and a timeout is now
   retried like any other transient failure.** The session comes from Home
@@ -72,6 +217,37 @@ All notable changes to this project will be documented in this file.
 
   Nothing observed in the field prompted this - hardening a path whose traffic
   profile changed by two orders of magnitude in 0.3.21.
+
+- **The `a8f0` priority lists were parsed one byte short, and the correction
+  that renamed them rested on that mistake.** Two rounds on the same three
+  frames, so both are worth recording.
+
+  0.3.20 called these lists the machine's menu and concluded that three of the
+  buttons shipped for the reference machine were fiction. The machine's owner
+  disproved it by looking at the machine: Doppio+ is on its screen and has a
+  lifetime counter well into the hundreds, yet the parser placed it in no list.
+  Hence the rename to `in_priority_list` / `priority_lists` /
+  `priority_position`, and the rule that membership proves nothing either way.
+
+  That rule stands. Its stated evidence does not. The payload is
+  `<profile> <bevid...>` with **no header byte**, and the parser read the ids
+  from `payload[2:]`, eating each list's first entry. Decoding the raw frames:
+  every list is 19 entries, not 18, and all ten (five profiles, two dumps)
+  carry one identical set of ids. The reported "contents move between dumps"
+  was the off-by-one; what actually differs is the order, by two adjacent
+  transpositions on three profiles - a most-recently-used ordering. The
+  bean-system drink was reported as absent from every list while the machine
+  puts it **first on all five**.
+
+  Membership still is not an existence test, and now for a reason that survives
+  checking: `0x19`, `0x1a` and `0x1b` each have a factory descriptor, a recipe
+  on every profile and a lifetime counter, and appear in no list at all.
+
+  No entity or datapoint changes - nothing consumes these fields yet, which is
+  the only reason two wrong readings cost documentation rather than hidden
+  buttons. The tests that pinned the artefact have been replaced by ones that
+  fail if the first entry is ever dropped again, including the one-entry list
+  that the old `_MIN_PAYLOAD` of 2 would have parsed as empty.
 
 ## [0.3.21] - 2026-09-05
 
@@ -117,37 +293,32 @@ All notable changes to this project will be documented in this file.
     unknown-model fallback: same command dialect, which does generalise, without
     the keepalive, which does not.
 
-- **The `a8f0` priority lists were parsed one byte short, and the correction
-  that renamed them rested on that mistake.** Two rounds on the same three
-  frames, so both are worth recording.
+- **Correction to a claim shipped in 0.3.20: the `a8f0` lists are not the
+  machine's menu.** The release notes said the reference machine "actually
+  offers" 18 drinks and that three of the buttons shipped for it were therefore
+  fiction. That reading was wrong, and the machine's owner is what disproved it:
+  he can see Doppio+ on the machine's own screen, and its lifetime counter reads
+  **823 brews** - yet it appears in none of the five lists in one dump and in
+  only two of them in another.
 
-  0.3.20 called these lists the machine's menu and concluded that three of the
-  buttons shipped for the reference machine were fiction. The machine's owner
-  disproved it by looking at the machine: Doppio+ is on its screen and has a
-  lifetime counter well into the hundreds, yet the parser placed it in no list.
-  Hence the rename to `in_priority_list` / `priority_lists` /
-  `priority_position`, and the rule that membership proves nothing either way.
+  What the lists actually are: a per-profile ordered *short list* of fixed size.
+  Every profile holds exactly 18 entries in every dump, and the contents move -
+  between two dumps of the same machine, profiles 1, 4 and 5 dropped Doppio+ and
+  picked up the bean-system drink, while 2 and 3 kept Doppio+ and never had the
+  bean system. Fixed size with moving contents is a carousel, not a capability
+  list.
 
-  That rule stands. Its stated evidence does not. The payload is
-  `<profile> <bevid...>` with **no header byte**, and the parser read the ids
-  from `payload[2:]`, eating each list's first entry. Decoding the raw frames:
-  every list is 19 entries, not 18, and all ten (five profiles, two dumps)
-  carry one identical set of ids. The reported "contents move between dumps"
-  was the off-by-one; what actually differs is the order, by two adjacent
-  transpositions on three profiles - a most-recently-used ordering. The
-  bean-system drink was reported as absent from every list while the machine
-  puts it **first on all five**.
+  So `on_menu` is now `in_priority_list`, `menu` is `priority_lists`,
+  `menu_position` is `priority_position`, and the docstrings say plainly that
+  membership proves nothing in either direction. No entity or datapoint changes:
+  nothing consumed these fields yet, which is the only reason the wrong reading
+  cost documentation rather than hidden buttons. A test pins the drift between
+  the two dumps so the convenient interpretation cannot come back.
 
-  Membership still is not an existence test, and now for a reason that survives
-  checking: `0x19`, `0x1a` and `0x1b` each have a factory descriptor, a recipe
-  on every profile and a lifetime counter, and appear in no list at all.
-
-  No entity or datapoint changes - nothing consumes these fields yet, which is
-  the only reason two wrong readings cost documentation rather than hidden
-  buttons. The tests that pinned the artefact have been replaced by ones that
-  fail if the first entry is ever dropped again, including the one-entry list
-  that the old `_MIN_PAYLOAD` of 2 would have parsed as empty.
-
+  > Superseded by 0.3.22: the "contents move between dumps" evidence in this
+  > entry was a parser off-by-one. The conclusion - membership proves nothing -
+  > still holds, for a different reason. This text is kept as what 0.3.21
+  > actually shipped.
 ### Changed
 - **`_slot_is_defined` no longer checks the `0xff` intensity marker.** A slot
   that dispenses nothing has not been programmed, and that was already the whole

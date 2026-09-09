@@ -174,6 +174,9 @@
       },
       "total_mug_to_go": {
         "name": "Total Mug to Go"
+      },
+      "monitor_published": {
+        "name": "Status Last Published"
       }
     },
     "button": {
@@ -333,6 +336,21 @@
   "exceptions": {
     "machine_offline": {
       "message": "{name} is offline on the De'Longhi cloud and cannot receive commands. Check that the machine is powered at the mains and connected to Wi-Fi (Coffee Link app), then try again."
+    },
+    "no_machine_configured": {
+      "message": "No De'Longhi machine is set up, so there is nothing to send this command to."
+    },
+    "target_required": {
+      "message": "This account has several machines ({machines}), so the command has to say which one. Pick a device as the target of the action - otherwise it would be sent to all of them."
+    },
+    "target_not_a_machine": {
+      "message": "{device} is not a De'Longhi coffee machine handled by this integration. Machines available: {machines}."
+    },
+    "machine_unavailable": {
+      "message": "{device} is a De'Longhi machine, but its account is not loaded right now, so the command cannot be sent. Machines available: {machines}."
+    },
+    "target_matched_no_machine": {
+      "message": "The target of this action contains no De'Longhi coffee machine. Machines available: {machines}."
     },
     "unknown_profile": {
       "message": "{name} has no user profile {profile}. Profiles this machine exposes: {known}."

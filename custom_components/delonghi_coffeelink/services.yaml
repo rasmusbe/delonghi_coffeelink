@@ -1,4 +1,7 @@
 start_beverage:
+  target:
+    device:
+      integration: delonghi_coffeelink
   fields:
     beverage:
       required: true
@@ -30,6 +33,9 @@ start_beverage:
             - brew_over_ice
 
 stop_beverage:
+  target:
+    device:
+      integration: delonghi_coffeelink
   fields:
     beverage:
       required: true
@@ -46,6 +52,9 @@ stop_beverage:
             - americano
 
 send_raw_command:
+  target:
+    device:
+      integration: delonghi_coffeelink
   fields:
     value_base64:
       required: true

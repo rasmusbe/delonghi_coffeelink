@@ -11,7 +11,14 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ACTION_START, ACTION_STOP, BEVERAGES, DOMAIN, MANUFACTURER
+from .const import (
+    ACTION_START,
+    ACTION_STOP,
+    BEVERAGES,
+    DOMAIN,
+    MANUFACTURER,
+    PROJECT_URL,
+)
 from .coordinator import DelonghiCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +49,27 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], ButtonEntity):
     _attr_has_entity_name = True
 
     @property
+    def available(self) -> bool:
+        """Buttons stay available across a failed poll - on purpose.
+
+        A button has no state of its own to lose: its state is the timestamp of
+        the last press, and `unknown` until one happens. Letting the coordinator
+        take it unavailable therefore buys no information, and costs a real bug.
+        The logbook labels *every* state change of a `button` entity "Pressed"
+        (frontend `src/data/logbook.ts`, STATE_ACTION_MESSAGES), so the trip
+        through `unavailable` and back after any cloud hiccup was rendered as
+        every button on the machine being pressed in the same second, and fired
+        every `state` trigger watching them. Observed on a single Ayla 504.
+
+        Refusing a command to a machine that cannot receive it is the
+        coordinator preflight's job (`_ensure_machine_reachable`), which raises
+        with an error the user actually sees. That check reads the machine's
+        connection status, not our poll health, so nothing is lost by keeping
+        the buttons pressable here.
+        """
+        return True
+
+    @property
     def device_info(self) -> DeviceInfo:
         d = self.coordinator.device
         return DeviceInfo(
@@ -50,7 +78,7 @@ class _Base(CoordinatorEntity[DelonghiCoordinator], ButtonEntity):
             manufacturer=MANUFACTURER,
             model=d.oem_model or d.model,
             sw_version=d.sw_version,
-            configuration_url=f"http://{d.lan_ip}" if d.lan_ip else None,
+            configuration_url=PROJECT_URL,
         )
 
 
